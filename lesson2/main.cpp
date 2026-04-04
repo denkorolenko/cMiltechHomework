@@ -1,0 +1,178 @@
+#include <iostream>
+#include <fstream>
+#include <cstring>
+#include <stdexcept>
+#include <algorithm>
+#include <cmath>
+#include <iomanip>
+
+struct Ammo {
+    double mass;
+    double drag;
+    double lift;
+};
+
+Ammo getAmmo(const char* name) {
+    if (std::strcmp(name, "VOG-17") == 0)       return {0.35, 0.07, 0.0};
+    if (std::strcmp(name, "M67") == 0)          return {0.60, 0.10, 0.0};
+    if (std::strcmp(name, "RKG-3") == 0)        return {1.20, 0.10, 0.0};
+    if (std::strcmp(name, "GLIDING-VOG") == 0)  return {0.45, 0.10, 1.0};
+    if (std::strcmp(name, "GLIDING-RKG") == 0)  return {1.40, 0.10, 1.0};
+
+    throw std::runtime_error("Unknown ammo type");
+}
+
+double clampValue(double x, double low, double high) {
+    return std::max(low, std::min(x, high));
+}
+
+// Розв'язує рівняння a*t^3 + b*t + c = 0 (метод Кардано)
+double solveCubicTime(double a, double b, double c) {
+    double p = -b * b / (3.0 * a * a);
+    double q = (2.0 * b * b * b) / (27.0 * a * a * a) + c / a;
+    double phi = acos(3.0 * q / (2.0 * p) * sqrt(-3.0 / p));
+    double t = 2.0 * sqrt(-p / 3.0) * cos((phi + 4.0 * M_PI) / 3.0) - b / (3.0 * a);
+    return t;
+}
+
+double computeFlightTime(double z0, double V0, double m, double d, double l) {
+    const double g = 9.81;
+
+    // Згідно з документом:
+    // a*t^3 + b*t + c = 0
+    double a = d * g * m - 2.0 * d * d * l * V0;
+    double b = -3.0 * g * m * m + 3.0 * d * l * m * V0;
+    double c = 6.0 * m * m * z0;
+
+    // Print coefficients for debugging
+    std::cout << "Cubic coefficients:\n";
+    std::cout << "a: " << a << "\n";
+    std::cout << "b: " << b << "\n";
+    std::cout << "c: " << c << "\n";
+
+    return solveCubicTime(a, b, c);
+}
+
+double computeHorizontalDistance(double t, double V0, double m, double d, double l) {
+    const double g = 9.81;
+
+    double term1 = V0 * t;
+
+    double term2 = -(pow(t, 2) * d * V0) / (2.0 * m);
+
+    double term3 =
+        pow(t, 3) * (6.0 * d * g * l * m - 6.0 * d * d * (pow(l, 2) - 1) * V0) /
+        (36.0 * m * m);
+
+    double term4 =
+        (pow(t, 4) * (
+            -6.0 * d * d * g * l * (1.0 + pow(l, 2) + pow(l, 4)) * m +
+             3.0 * pow(d, 3) * pow(l, 2) * (1.0 + pow(l, 2)) * V0 +
+             6.0 * pow(d, 3) * pow(l, 4) * (1.0 + pow(l, 2)) * V0
+        )) /
+        (36.0 * pow(1.0 + pow(l, 2), 2) * pow(m, 3));
+
+    double term5 =
+        (pow(t, 5) * (
+             3.0 * pow(d, 3) * g * pow(l, 3) * m -
+             3.0 * pow(d, 4) * pow(l, 2) * (1.0 + pow(l, 2)) * V0
+        )) /
+        (36.0 * (1.0 + pow(l, 2)) * pow(m, 4));
+
+    return term1 + term2 + term3 + term4 + term5;
+}
+
+int main()
+{
+    std::ifstream in("input.txt");
+    std::ofstream out("output.txt");
+    
+    if (!in.is_open()) {
+        std::cerr << "Error: cannot open input.txt\n";
+        return 1;
+    }
+
+    if (!out.is_open()) {
+        std::cerr << "Error: cannot open output.txt\n";
+        return 1;
+    }
+    
+    double xd, yd, zd;
+    double targetX, targetY;
+    double attackSpeed;
+    double accelerationPath;
+    char ammo_name[64];
+
+    // Read input data
+    in >> xd >> yd >> zd >> targetX >> targetY >> attackSpeed >> accelerationPath >> ammo_name;
+
+    // Print read values for debugging
+    std::cout << "Read values:\n";
+    std::cout << "Drone position: (" << xd << ", " << yd << ", " << zd << ")\n";
+    std::cout << "Target position: (" << targetX << ", " << targetY << ")\n";
+    std::cout << "Attack speed: " << attackSpeed << "\n";
+    std::cout << "Acceleration path: " << accelerationPath << "\n";
+    std::cout << "Ammo type: " << ammo_name << "\n";
+
+    if (in.fail()) {
+        std::cerr << "Error: invalid input format\n";
+        return 1;
+    }
+    
+    try {
+        Ammo ammo = getAmmo(ammo_name);
+
+        double t = computeFlightTime(zd, attackSpeed, ammo.mass, ammo.drag, ammo.lift);
+        std::cout << "Computed flight time t: " << t << "\n";
+
+        double h = computeHorizontalDistance(t, attackSpeed, ammo.mass, ammo.drag, ammo.lift);
+        std::cout << "Computed horizontal distance h: " << h << "\n";
+
+        double dx = targetX - xd;
+        double dy = targetY - yd;
+        double D = sqrt(dx * dx + dy * dy);
+
+        std::cout << "dx: " << dx << ", dy: " << dy << "\n";
+        std::cout << "Computed distance D: " << D << "\n";
+
+        bool maneuverNeeded = (h + accelerationPath) > D;
+        std::cout << "Maneuver needed: " << (maneuverNeeded ? "Yes" : "No") << "\n";
+
+        double currentX = xd;
+        double currentY = yd;
+
+        out << std::fixed << std::setprecision(3);
+
+        if (maneuverNeeded) {
+            double ratioMove = (h + accelerationPath) / D;
+
+            double intermediateX = targetX - (targetX - xd) * ratioMove;
+            double intermediateY = targetY - (targetY - yd) * ratioMove;
+
+            out << intermediateX << " " << intermediateY << "\n";
+            std::cout << "Intermediate position: (" << intermediateX << ", " << intermediateY << ")\n";
+
+            currentX = intermediateX;
+            currentY = intermediateY;
+
+            dx = targetX - currentX;
+            dy = targetY - currentY;
+            D = sqrt(dx * dx + dy * dy);
+        }
+
+        double ratioFire = (D - h) / D;
+        double fireX = currentX + (targetX - currentX) * ratioFire;
+        double fireY = currentY + (targetY - currentY) * ratioFire;
+
+        out << fireX << " " << fireY << "\n";
+        std::cout << "Fire position: (" << fireX << ", " << fireY << ")\n";
+    }
+    catch (const std::exception& e) {
+        std::cerr << "Error: " << e.what() << "\n";
+        out << "ERROR\n";
+        return 1;
+    }
+
+    std::cout << "End\n";
+    return 0;
+}
