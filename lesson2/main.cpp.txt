@@ -153,7 +153,7 @@ int main()
             double intermediateX = targetX - (targetX - xd) * ratioMove;
             double intermediateY = targetY - (targetY - yd) * ratioMove;
 
-            out << intermediateX << " " << intermediateY << "\n";
+            out << intermediateX << " " << intermediateY << " ";
             std::cout << "Intermediate position: (" << intermediateX << ", " << intermediateY << ")\n";
 
             currentX = intermediateX;
