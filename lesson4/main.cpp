@@ -288,10 +288,10 @@ int main() {
     while (stepCount < MAX_STEPS && !dropped) {
 
         // 1. Зберігаємо поточний стан
-        outX[stepCount]      = (float)cx;
-        outY[stepCount]      = (float)cy;
-        outDir[stepCount]    = (float)dir;
-        outState[stepCount]  = (int)state;
+        outX[stepCount]      = cx;
+        outY[stepCount]      = cy;
+        outDir[stepCount]    = dir;
+        outState[stepCount]  = state;
         outTarget[stepCount] = chosenTarget;
 
         // 2. Інтерполюємо позиції всіх цілей
@@ -424,7 +424,10 @@ int main() {
                 dir = desiredDir;
 
                 vel += acceleration * simTimeStep;
-                if (vel >= attackSpeed) { vel = attackSpeed; state = MOVING; }
+                if (vel >= attackSpeed) {
+                    vel = attackSpeed;
+                    state = MOVING;
+                }
                 cx += vel * simTimeStep * std::cos(dir);
                 cy += vel * simTimeStep * std::sin(dir);
                 break;
@@ -468,7 +471,7 @@ int main() {
     out << std::fixed << std::setprecision(3);
     out << stepCount << "\n";
 
-    // Рядок 2: координати x y x y ...
+    // Рядок 2: координати
     for (int i = 0; i < stepCount; i++) {
         out << outX[i] << " " << outY[i] << " ";
     }
