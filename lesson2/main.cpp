@@ -41,7 +41,7 @@ double solveCubicTime(double a, double b, double c) {
     // Large deviation = real error; tiny deviation = float rounding
     if (arg < -1.0 - EPS || arg > 1.0 + EPS) {
         throw std::runtime_error("acos argument out of range: " + std::to_string(arg));
-}
+    }
     arg = std::max(-1.0, std::min(1.0, arg)); // clamp float rounding noise
     double phi = acos(arg);
     
