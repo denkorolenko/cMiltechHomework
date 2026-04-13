@@ -26,15 +26,25 @@ Ammo getAmmo(const char* name) {
     throw std::runtime_error("Unknown ammo type");
 }
 
-double clampValue(double x, double low, double high) {
-    return std::max(low, std::min(x, high));
-}
-
 // Розв'язує рівняння a*t^3 + b*t^2 + c = 0 (метод Кардано)
 double solveCubicTime(double a, double b, double c) {
+    const double EPS = 1e-6;
+
+    if (fabs(a) < EPS) {
+        throw std::runtime_error("Coefficient 'a' is too close to zero");
+    }
+
     double p = -b * b / (3.0 * a * a);
     double q = (2.0 * b * b * b) / (27.0 * a * a * a) + c / a;
-    double phi = acos(3.0 * q / (2.0 * p) * sqrt(-3.0 / p));
+    double arg = 3.0 * q / (2.0 * p) * sqrt(-3.0 / p);
+
+    // Large deviation = real error; tiny deviation = float rounding
+    if (arg < -1.0 - EPS || arg > 1.0 + EPS) {
+        throw std::runtime_error("acos argument out of range: " + std::to_string(arg));
+}
+    arg = std::max(-1.0, std::min(1.0, arg)); // clamp float rounding noise
+    double phi = acos(arg);
+    
     double t = 2.0 * sqrt(-p / 3.0) * cos((phi + 4.0 * M_PI) / 3.0) - b / (3.0 * a);
     return t;
 }
@@ -148,10 +158,16 @@ int main()
         out << std::fixed << std::setprecision(3);
 
         if (maneuverNeeded) {
-            double ratioMove = (h + accelerationPath) / D;
-
-            double intermediateX = targetX - (targetX - xd) * ratioMove;
-            double intermediateY = targetY - (targetY - yd) * ratioMove;
+            double intermediateX, intermediateY;
+            if (D < 1e-6) {
+                // Target is under the drone, move to the side by X axis
+                intermediateX = xd + h + accelerationPath;
+                intermediateY = yd;
+            } else {
+                double ratioMove = (h + accelerationPath) / D;
+                intermediateX = targetX - (targetX - xd) * ratioMove;
+                intermediateY = targetY - (targetY - yd) * ratioMove;
+            }
 
             out << intermediateX << " " << intermediateY << " ";
             std::cout << "Intermediate position: (" << intermediateX << ", " << intermediateY << ")\n";
