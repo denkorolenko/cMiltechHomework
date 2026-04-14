@@ -10,13 +10,11 @@ Denys Korolenko
 #include <cmath>
 #include <iomanip>
 
-// ─── Константи ───────────────────────────────────────────────────────────────
-static const int   NUM_TARGETS   = 5;
-static const int   TIME_STEPS    = 60;
-static const int   MAX_STEPS     = 10000;
-static const float G            = 9.81f;
+static const int   NUM_TARGETS = 5;
+static const int   TIME_STEPS  = 60;
+static const int   MAX_STEPS   = 10000;
+static const float G           = 9.81f;
 
-// ─── Стани дрона ─────────────────────────────────────────────────────────────
 enum DroneState {
     STOPPED      = 0,
     ACCELERATING = 1,
@@ -25,26 +23,49 @@ enum DroneState {
     MOVING       = 4
 };
 
-// ─── Параметри боєприпасів (масиви) ──────────────────────────────────────────
+// боєприпаси: назва, маса, лобовий опір, підйомна сила
 static const char  bombNames[][15] = {"VOG-17","M67","RKG-3","GLIDING-VOG","GLIDING-RKG"};
-static const float bombM[]         = {0.35f, 0.6f, 1.2f, 0.45f, 1.4f};
-static const float bombD[]         = {0.07f, 0.10f, 0.10f, 0.10f, 0.10f};
-static const float bombL[]         = {0.0f,  0.0f,  0.0f,  1.0f,  1.0f};
+static const float bombM[] = {0.35f, 0.6f, 1.2f, 0.45f, 1.4f};
+static const float bombD[] = {0.07f, 0.10f, 0.10f, 0.10f, 0.10f};
+static const float bombL[] = {0.0f,  0.0f,  0.0f,  1.0f,  1.0f};
 
-// ─── Масиви координат цілей ───────────────────────────────────────────────────
 static float targetXInTime[NUM_TARGETS][TIME_STEPS];
 static float targetYInTime[NUM_TARGETS][TIME_STEPS];
 
-// ─── Буфери виводу симуляції ──────────────────────────────────────────────────
+// буфери для запису траєкторії
 static float outX[MAX_STEPS+1];
 static float outY[MAX_STEPS+1];
 static float outDir[MAX_STEPS+1];
 static int   outState[MAX_STEPS+1];
 static int   outTarget[MAX_STEPS+1];
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Пошук боєприпасу за назвою (цикл for)
-// ─────────────────────────────────────────────────────────────────────────────
+struct DroneConfig {
+    float x, y, z;
+    float initialDir;
+    float attackSpeed;
+    float accelerationPath;
+    float m, d, l;          // властивості боєприпасу
+    float arrayTimeStep;
+    float simTimeStep;
+    float hitRadius;
+    float angularSpeed;
+    float turnThreshold;
+};
+
+struct SimState {
+    float cx, cy;
+    float dir, vel;
+    DroneState state;
+    float currentTime;
+    float turnTarget;
+    float turnRemain;
+    int   chosenTarget;
+};
+
+// ============================================================
+// Утилітарні фізичні функції
+// ============================================================
+
 int findAmmoIndex(const char* name) {
     for (int i = 0; i < 5; i++) {
         if (std::strcmp(bombNames[i], name) == 0) return i;
@@ -52,35 +73,26 @@ int findAmmoIndex(const char* name) {
     return -1;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Балістика: розв'язок кубічного рівняння (метод Кардано)
-// a*t^3 + b*t^2 + c = 0
-// ─────────────────────────────────────────────────────────────────────────────
+// розв'язок кубічного рівняння методом Кардано: a*t^3 + b*t^2 + c = 0
 float solveCubicTime(float a, float b, float c) {
     const float EPS = 1e-6f;
 
-    if (fabs(a) < EPS) {
+    if (fabs(a) < EPS)
         throw std::runtime_error("Coefficient 'a' is too close to zero");
-    }
 
     float p = -b * b / (3.0f * a * a);
     float q = (2.0f * b * b * b) / (27.0f * a * a * a) + c / a;
     float arg = 3.0f * q / (2.0f * p) * sqrtf(-3.0f / p);
 
-    // Large deviation = real error; tiny deviation = float rounding
-    if (arg < -1.0f - EPS || arg > 1.0f + EPS) {
+    if (arg < -1.0f - EPS || arg > 1.0f + EPS)
         throw std::runtime_error("acos argument out of range: " + std::to_string(arg));
-    }
-    arg = std::max(-1.0f, std::min(1.0f, arg)); // clamp float rounding noise
+
+    arg = std::max(-1.0f, std::min(1.0f, arg)); // на випадок флотингових похибок
     float phi = acosf(arg);
-    
     float t = 2.0f * sqrtf(-p / 3.0f) * cosf((phi + 4.0f * M_PI) / 3.0f) - b / (3.0f * a);
     return t;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Час польоту боєприпасу
-// ─────────────────────────────────────────────────────────────────────────────
 float computeFlightTime(float z0, float V0, float m, float d, float l) {
     float a = d * G * m - 2.0f * d * d * l * V0;
     float b = -3.0f * G * m * m + 3.0f * d * l * m * V0;
@@ -88,9 +100,7 @@ float computeFlightTime(float z0, float V0, float m, float d, float l) {
     return solveCubicTime(a, b, c);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Горизонтальна дистанція польоту (степеневий ряд до t^5)
-// ─────────────────────────────────────────────────────────────────────────────
+// горизонтальна дальність польоту (розклад у ряд до t^5)
 float computeHorizontalDistance(float t, float V0, float m, float d, float l) {
     float term1 = V0 * t;
 
@@ -118,9 +128,6 @@ float computeHorizontalDistance(float t, float V0, float m, float d, float l) {
     return term1 + term2 + term3 + term4 + term5;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Інтерполяція позиції цілі в момент часу t
-// ─────────────────────────────────────────────────────────────────────────────
 void interpolateTarget(int targetIdx, float t, float arrayTimeStep,
                        float& outTx, float& outTy) {
     int   idx  = static_cast<int>(std::floor(t / arrayTimeStep)) % TIME_STEPS;
@@ -130,10 +137,8 @@ void interpolateTarget(int targetIdx, float t, float arrayTimeStep,
     outTy = targetYInTime[targetIdx][idx] + (targetYInTime[targetIdx][next] - targetYInTime[targetIdx][idx]) * frac;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Обчислити точку скиду та орієнтовний час польоту дрона до неї.
-// Повертає false, якщо балістика не вдалась.
-// ─────────────────────────────────────────────────────────────────────────────
+// обчислює точку скиду та приблизний час польоту до неї
+// повертає false якщо балістика не збіглась
 bool computeFirePoint(float droneX, float droneY, float droneZ,
                       float tgtX, float tgtY,
                       float V0, float accPath,
@@ -142,11 +147,10 @@ bool computeFirePoint(float droneX, float droneY, float droneZ,
                       float& flightDist, float& flightTime) {
     try {
         const float EPS = 1e-6f;
-        flightTime  = computeFlightTime(droneZ, V0, m, d, l);
-        flightDist  = computeHorizontalDistance(flightTime, V0, m, d, l);
-        if (fabs(flightTime) <= EPS || fabs(flightDist) <= EPS) {
+        flightTime = computeFlightTime(droneZ, V0, m, d, l);
+        flightDist = computeHorizontalDistance(flightTime, V0, m, d, l);
+        if (fabs(flightTime) <= EPS || fabs(flightDist) <= EPS)
             return false;
-        }
 
         float dx = tgtX - droneX;
         float dy = tgtY - droneY;
@@ -155,7 +159,7 @@ bool computeFirePoint(float droneX, float droneY, float droneZ,
         float curX = droneX, curY = droneY;
 
         if (flightDist + accPath > D) {
-            // Потрібен маневр відльоту
+            // треба відлетіти далі щоб набрати відстань для скиду
             if (fabs(D) < EPS) {
                 curX = droneX + flightDist + accPath;
                 curY = droneY;
@@ -183,9 +187,7 @@ bool computeFirePoint(float droneX, float droneY, float droneZ,
     return true;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Кут між двома векторами напрямку (різниця кутів, [-π, π])
-// ─────────────────────────────────────────────────────────────────────────────
+// різниця кутів у діапазоні [-pi, pi]
 float angleDiff(float from, float to) {
     float diff = to - from;
     diff = fmodf(diff + M_PI, 2.0f * M_PI);
@@ -193,311 +195,305 @@ float angleDiff(float from, float to) {
     return diff - M_PI;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// main
-// ─────────────────────────────────────────────────────────────────────────────
-int main() {
-    // ── Читання input.txt ────────────────────────────────────────────────────
+// ============================================================
+// Введення / виведення
+// ============================================================
+
+bool readInput(DroneConfig& cfg) {
     std::ifstream in("input.txt");
     if (!in.is_open()) {
         std::cerr << "Error: cannot open input.txt\n";
-        return 1;
+        return false;
     }
 
-    float droneX, droneY, droneZ;
-    float initialDir;
-    float attackSpeed;
-    float accelerationPath;
-    char  ammo_name[64];
-    float arrayTimeStep;
-    float simTimeStep;
-    float hitRadius;
-    float angularSpeed;
-    float turnThreshold;
-
-    in >> droneX >> droneY >> droneZ
-       >> initialDir
-       >> attackSpeed >> accelerationPath
+    char ammo_name[64];
+    in >> cfg.x >> cfg.y >> cfg.z
+       >> cfg.initialDir
+       >> cfg.attackSpeed >> cfg.accelerationPath
        >> ammo_name
-       >> arrayTimeStep >> simTimeStep
-       >> hitRadius >> angularSpeed >> turnThreshold;
+       >> cfg.arrayTimeStep >> cfg.simTimeStep
+       >> cfg.hitRadius >> cfg.angularSpeed >> cfg.turnThreshold;
 
     if (in.fail()) {
         std::cerr << "Error: invalid input.txt format\n";
-        return 1;
+        return false;
     }
     in.close();
 
-    // ── Знайти боєприпас ─────────────────────────────────────────────────────
     int ammoIdx = findAmmoIndex(ammo_name);
     if (ammoIdx < 0) {
         std::cerr << "Error: unknown ammo type: " << ammo_name << "\n";
-        return 1;
+        return false;
     }
-    float m = bombM[ammoIdx];
-    float d = bombD[ammoIdx];
-    float l = bombL[ammoIdx];
+    cfg.m = bombM[ammoIdx];
+    cfg.d = bombD[ammoIdx];
+    cfg.l = bombL[ammoIdx];
+    return true;
+}
 
-    // ── Читання targets.txt ──────────────────────────────────────────────────
+bool loadTargets() {
     std::ifstream tf("targets.txt");
     if (!tf.is_open()) {
         std::cerr << "Error: cannot open targets.txt\n";
-        return 1;
+        return false;
     }
 
-    for (int i = 0; i < NUM_TARGETS; i++) {
-        for (int j = 0; j < TIME_STEPS; j++) {
+    for (int i = 0; i < NUM_TARGETS; i++)
+        for (int j = 0; j < TIME_STEPS; j++)
             tf >> targetXInTime[i][j];
-        }
-    }
 
-    for (int i = 0; i < NUM_TARGETS; i++) {
-        for (int j = 0; j < TIME_STEPS; j++) {
+    for (int i = 0; i < NUM_TARGETS; i++)
+        for (int j = 0; j < TIME_STEPS; j++)
             tf >> targetYInTime[i][j];
-        }
-    }
 
     if (tf.fail()) {
         std::cerr << "Error: invalid targets.txt format\n";
-        return 1;
+        return false;
     }
     tf.close();
+    return true;
+}
 
-    // ── Прискорення ──────────────────────────────────────────────────────────
-    float acceleration = attackSpeed * attackSpeed / (2.0f * accelerationPath);
-
-    // ── Стан дрона ───────────────────────────────────────────────────────────
-    float    cx  = droneX, cy = droneY;   // поточна позиція
-    float    dir = initialDir;            // поточний напрямок (рад)
-    float    vel = 0.0f;                  // поточна швидкість
-    DroneState state = STOPPED;
-    float    currentTime = 0.0f;
-
-    // Поворот
-    float turnTarget  = dir;  // напрямок, до якого повертаємось
-    float turnRemain  = 0.0f;  // залишок кута повороту (>0)
-
-    // Поточна обрана ціль і точка скиду
-    int   chosenTarget = 0;
-    float fireX = 0.0f, fireY = 0.0f;
-
-    int   stepCount = 0;
-    bool  dropped   = false;
-
-    // ── Головний цикл симуляції ───────────────────────────────────────────────
-    while (stepCount < MAX_STEPS && !dropped) {
-
-        // 1. Зберігаємо поточний стан
-        outX[stepCount]      = cx;
-        outY[stepCount]      = cy;
-        outDir[stepCount]    = dir;
-        outState[stepCount]  = state;
-        outTarget[stepCount] = chosenTarget;
-
-        // 2. Інтерполюємо позиції всіх цілей
-        float tgtX[NUM_TARGETS], tgtY[NUM_TARGETS];
-        for (int i = 0; i < NUM_TARGETS; i++)
-            interpolateTarget(i, currentTime, arrayTimeStep, tgtX[i], tgtY[i]);
-
-        // 3. Для кожної цілі: розрахунок lead targeting + точки скиду + оцінка часу
-        float bestTotalTime = 1e18f;
-        int    bestTarget    = -1;
-        float bestFireX = 0.0f, bestFireY = 0.0f;
-
-        for (int i = 0; i < NUM_TARGETS; i++) {
-            // Швидкість цілі (кінцеві різниці)
-            float tgtXNext, tgtYNext;
-            interpolateTarget(i, currentTime + simTimeStep, arrayTimeStep, tgtXNext, tgtYNext);
-            float tvx = (tgtXNext - tgtX[i]) / simTimeStep;
-            float tvy = (tgtYNext - tgtY[i]) / simTimeStep;
-
-            // Перша оцінка: балістика до поточної позиції
-            float fx, fy, hDist, tFlight;
-            if (!computeFirePoint(cx, cy, droneZ, tgtX[i], tgtY[i],
-                                  attackSpeed, accelerationPath, m, d, l,
-                                  fx, fy, hDist, tFlight))
-                continue;
-
-            // Оцінка часу польоту дрона до точки скиду
-            float dxFire = fx - cx, dyFire = fy - cy;
-            float distFire = std::sqrt(dxFire*dxFire + dyFire*dyFire);
-            float droneFlightTime = distFire / attackSpeed + accelerationPath / attackSpeed;
-
-            float totalTime = droneFlightTime + tFlight;
-
-            // Lead targeting: перерахунок до прогнозованої позиції
-            float predX = tgtX[i] + tvx * totalTime;
-            float predY = tgtY[i] + tvy * totalTime;
-
-            float fx2, fy2, hDist2, tFlight2;
-            if (!computeFirePoint(cx, cy, droneZ, predX, predY,
-                                  attackSpeed, accelerationPath, m, d, l,
-                                  fx2, fy2, hDist2, tFlight2)) {
-                continue;
-            }
-
-            dxFire = fx2 - cx; dyFire = fy2 - cy;
-            distFire = std::sqrt(dxFire*dxFire + dyFire*dyFire);
-            droneFlightTime = distFire / attackSpeed + accelerationPath / attackSpeed;
-            totalTime = droneFlightTime + tFlight2;
-
-            // Додаємо штраф при зміні цілі
-            if (i != chosenTarget) {
-                float timeToStop = 0.0f;
-                switch (state) {
-                    case STOPPED:
-                    case TURNING:
-                        timeToStop = turnRemain / angularSpeed; break;
-                    case ACCELERATING:
-                        timeToStop = vel / acceleration; break;
-                    case MOVING:
-                        timeToStop = attackSpeed / acceleration; break;
-                    case DECELERATING:
-                        timeToStop = vel / acceleration; break;
-                }
-                totalTime += timeToStop;
-            }
-
-            if (totalTime < bestTotalTime) {
-                bestTotalTime = totalTime;
-                bestTarget    = i;
-                bestFireX     = fx2;
-                bestFireY     = fy2;
-            }
-        }
-
-        if (bestTarget < 0) {
-            std::cerr << "Error: no reachable target\n";
-            return 1;
-        }
-
-        chosenTarget = bestTarget;
-        fireX = bestFireX;
-        fireY = bestFireY;
-
-        // 4. Перевірка досягнення точки скиду
-        float toFireX = fireX - cx, toFireY = fireY - cy;
-        float distToFire = std::sqrt(toFireX*toFireX + toFireY*toFireY);
-        if (distToFire <= hitRadius) {
-            dropped = true;
-            stepCount++;
-            break;
-        }
-
-        // 5. Визначаємо потрібний напрямок до точки скиду
-        float desiredDir = std::atan2(toFireY, toFireX);
-        float delta = angleDiff(dir, desiredDir);
-
-        // 6. Оновлюємо стан і позицію дрона
-        switch (state) {
-            case STOPPED: {
-                if (std::fabs(delta) > turnThreshold) {
-                    state = TURNING;
-                    turnTarget = desiredDir;
-                    turnRemain = std::fabs(delta);
-                } else {
-                    dir = desiredDir;
-                    state = ACCELERATING;
-                }
-                break;
-            }
-            case TURNING: {
-                float turnStep = angularSpeed * simTimeStep;
-                if (turnRemain <= turnStep) {
-                    dir   = turnTarget;
-                    state = ACCELERATING;
-                    turnRemain = 0.0f;
-                } else {
-                    float sign = (delta >= 0.0f) ? 1.0f : -1.0f;
-                    dir        += sign * turnStep;
-                    turnRemain -= turnStep;
-                }
-                break;
-            }
-            case ACCELERATING: {
-                // Перевірити, чи треба різко перенацілитись
-                if (std::fabs(delta) > turnThreshold) {
-                    state = DECELERATING;
-                    break;
-                }
-                // Повільно підкоректувати напрямок якщо кут малий
-                dir = desiredDir;
-
-                vel += acceleration * simTimeStep;
-                if (vel >= attackSpeed) {
-                    vel = attackSpeed;
-                    state = MOVING;
-                }
-                cx += vel * simTimeStep * std::cos(dir);
-                cy += vel * simTimeStep * std::sin(dir);
-                break;
-            }
-            case MOVING: {
-                if (std::fabs(delta) > turnThreshold) {
-                    state = DECELERATING;
-                    break;
-                }
-                dir = desiredDir;
-                cx += vel * simTimeStep * std::cos(dir);
-                cy += vel * simTimeStep * std::sin(dir);
-                break;
-            }
-            case DECELERATING: {
-                vel -= acceleration * simTimeStep;
-                if (vel <= 0.0) {
-                    vel   = 0.0;
-                    state = TURNING;
-                    turnTarget = desiredDir;
-                    turnRemain = std::fabs(angleDiff(dir, desiredDir));
-                } else {
-                    cx += vel * simTimeStep * std::cos(dir);
-                    cy += vel * simTimeStep * std::sin(dir);
-                }
-                break;
-            }
-        }
-
-        currentTime += simTimeStep;
-        stepCount++;
-    }
-
-    // ── Запис у simulation.txt ────────────────────────────────────────────────
+bool writeOutput(int stepCount) {
     std::ofstream out("simulation.txt");
     if (!out.is_open()) {
         std::cerr << "Error: cannot open simulation.txt\n";
-        return 1;
+        return false;
     }
 
     out << std::fixed << std::setprecision(3);
     out << stepCount << "\n";
 
-    // Рядок 2: координати
-    for (int i = 0; i < stepCount; i++) {
+    for (int i = 0; i < stepCount; i++)
         out << outX[i] << " " << outY[i] << " ";
-    }
     out << "\n";
 
-    // Рядок 3: напрямки
-    for (int i = 0; i < stepCount; i++) {
+    for (int i = 0; i < stepCount; i++)
         out << outDir[i] << " ";
-    }
     out << "\n";
 
-    // Рядок 4: стани
-    for (int i = 0; i < stepCount; i++) {
+    for (int i = 0; i < stepCount; i++)
         out << outState[i] << " ";
-    }
     out << "\n";
 
-    // Рядок 5: індекси поточної цілі
-    for (int i = 0; i < stepCount; i++) {
+    for (int i = 0; i < stepCount; i++)
         out << outTarget[i] << " ";
-    }
     out << "\n";
 
     out.close();
+    return true;
+}
+
+// ============================================================
+// Логіка симуляції
+// ============================================================
+
+// вибір найкращої цілі з урахуванням lead targeting та штрафу за зміну
+// повертає індекс цілі або -1 якщо жодна не досяжна
+int selectBestTarget(const SimState& s, const DroneConfig& cfg,
+                     float& bestFireX, float& bestFireY) {
+    const float acceleration = cfg.attackSpeed * cfg.attackSpeed / (2.0f * cfg.accelerationPath);
+
+    float tgtX[NUM_TARGETS], tgtY[NUM_TARGETS];
+    for (int i = 0; i < NUM_TARGETS; i++)
+        interpolateTarget(i, s.currentTime, cfg.arrayTimeStep, tgtX[i], tgtY[i]);
+
+    float bestTotalTime = 1e18f;
+    int   bestTarget    = -1;
+    bestFireX = 0.0f;
+    bestFireY = 0.0f;
+
+    for (int i = 0; i < NUM_TARGETS; i++) {
+        float tgtXNext, tgtYNext;
+        interpolateTarget(i, s.currentTime + cfg.simTimeStep, cfg.arrayTimeStep, tgtXNext, tgtYNext);
+        float tvx = (tgtXNext - tgtX[i]) / cfg.simTimeStep;
+        float tvy = (tgtYNext - tgtY[i]) / cfg.simTimeStep;
+
+        // перша оцінка часу — до поточної позиції цілі
+        float fx, fy, hDist, tFlight;
+        if (!computeFirePoint(s.cx, s.cy, cfg.z, tgtX[i], tgtY[i],
+                              cfg.attackSpeed, cfg.accelerationPath, cfg.m, cfg.d, cfg.l,
+                              fx, fy, hDist, tFlight))
+            continue;
+
+        float dxFire = fx - s.cx, dyFire = fy - s.cy;
+        float distFire = std::sqrt(dxFire*dxFire + dyFire*dyFire);
+        float droneFlightTime = distFire / cfg.attackSpeed + cfg.accelerationPath / cfg.attackSpeed;
+        float totalTime = droneFlightTime + tFlight;
+
+        // прогнозована позиція і повторний розрахунок
+        float predX = tgtX[i] + tvx * totalTime;
+        float predY = tgtY[i] + tvy * totalTime;
+
+        float fx2, fy2, hDist2, tFlight2;
+        if (!computeFirePoint(s.cx, s.cy, cfg.z, predX, predY,
+                              cfg.attackSpeed, cfg.accelerationPath, cfg.m, cfg.d, cfg.l,
+                              fx2, fy2, hDist2, tFlight2))
+            continue;
+
+        dxFire = fx2 - s.cx; dyFire = fy2 - s.cy;
+        distFire = std::sqrt(dxFire*dxFire + dyFire*dyFire);
+        droneFlightTime = distFire / cfg.attackSpeed + cfg.accelerationPath / cfg.attackSpeed;
+        totalTime = droneFlightTime + tFlight2;
+
+        // штраф за зміну цілі
+        if (i != s.chosenTarget) {
+            float timeToStop = 0.0f;
+            switch (s.state) {
+                case STOPPED:
+                case TURNING:      timeToStop = s.turnRemain / cfg.angularSpeed; break;
+                case ACCELERATING: timeToStop = s.vel / acceleration; break;
+                case MOVING:       timeToStop = cfg.attackSpeed / acceleration; break;
+                case DECELERATING: timeToStop = s.vel / acceleration; break;
+            }
+            totalTime += timeToStop;
+        }
+
+        if (totalTime < bestTotalTime) {
+            bestTotalTime = totalTime;
+            bestTarget    = i;
+            bestFireX     = fx2;
+            bestFireY     = fy2;
+        }
+    }
+    return bestTarget;
+}
+
+// один крок стейт-машини дрона
+void updateDroneState(SimState& s, float fireX, float fireY, const DroneConfig& cfg) {
+    const float acceleration = cfg.attackSpeed * cfg.attackSpeed / (2.0f * cfg.accelerationPath);
+
+    float toFireX = fireX - s.cx, toFireY = fireY - s.cy;
+    float desiredDir = std::atan2(toFireY, toFireX);
+    float delta = angleDiff(s.dir, desiredDir);
+
+    switch (s.state) {
+        case STOPPED: {
+            if (std::fabs(delta) > cfg.turnThreshold) {
+                s.state      = TURNING;
+                s.turnTarget = desiredDir;
+                s.turnRemain = std::fabs(delta);
+            } else {
+                s.dir   = desiredDir;
+                s.state = ACCELERATING;
+            }
+            break;
+        }
+        case TURNING: {
+            float turnStep = cfg.angularSpeed * cfg.simTimeStep;
+            if (s.turnRemain <= turnStep) {
+                s.dir        = s.turnTarget;
+                s.state      = ACCELERATING;
+                s.turnRemain = 0.0f;
+            } else {
+                float sign = (delta >= 0.0f) ? 1.0f : -1.0f;
+                s.dir        += sign * turnStep;
+                s.turnRemain -= turnStep;
+            }
+            break;
+        }
+        case ACCELERATING: {
+            if (std::fabs(delta) > cfg.turnThreshold) {
+                s.state = DECELERATING;
+                break;
+            }
+            s.dir = desiredDir;
+            s.vel += acceleration * cfg.simTimeStep;
+            if (s.vel >= cfg.attackSpeed) {
+                s.vel   = cfg.attackSpeed;
+                s.state = MOVING;
+            }
+            s.cx += s.vel * cfg.simTimeStep * std::cos(s.dir);
+            s.cy += s.vel * cfg.simTimeStep * std::sin(s.dir);
+            break;
+        }
+        case MOVING: {
+            if (std::fabs(delta) > cfg.turnThreshold) {
+                s.state = DECELERATING;
+                break;
+            }
+            s.dir = desiredDir;
+            s.cx += s.vel * cfg.simTimeStep * std::cos(s.dir);
+            s.cy += s.vel * cfg.simTimeStep * std::sin(s.dir);
+            break;
+        }
+        case DECELERATING: {
+            s.vel -= acceleration * cfg.simTimeStep;
+            if (s.vel <= 0.0f) {
+                s.vel        = 0.0f;
+                s.state      = TURNING;
+                s.turnTarget = desiredDir;
+                s.turnRemain = std::fabs(angleDiff(s.dir, desiredDir));
+            } else {
+                s.cx += s.vel * cfg.simTimeStep * std::cos(s.dir);
+                s.cy += s.vel * cfg.simTimeStep * std::sin(s.dir);
+            }
+            break;
+        }
+    }
+}
+
+// основний цикл симуляції; повертає кількість кроків або -1 при помилці
+int runSimulation(const DroneConfig& cfg) {
+    SimState s;
+    s.cx          = cfg.x;
+    s.cy          = cfg.y;
+    s.dir         = cfg.initialDir;
+    s.vel         = 0.0f;
+    s.state       = STOPPED;
+    s.currentTime = 0.0f;
+    s.turnTarget  = cfg.initialDir;
+    s.turnRemain  = 0.0f;
+    s.chosenTarget = 0;
+
+    float fireX = 0.0f, fireY = 0.0f;
+    int   stepCount = 0;
+
+    while (stepCount < MAX_STEPS) {
+        outX[stepCount]      = s.cx;
+        outY[stepCount]      = s.cy;
+        outDir[stepCount]    = s.dir;
+        outState[stepCount]  = s.state;
+        outTarget[stepCount] = s.chosenTarget;
+
+        float bestFireX, bestFireY;
+        int bestTarget = selectBestTarget(s, cfg, bestFireX, bestFireY);
+        if (bestTarget < 0) {
+            std::cerr << "Error: no reachable target\n";
+            return -1;
+        }
+        s.chosenTarget = bestTarget;
+        fireX = bestFireX;
+        fireY = bestFireY;
+
+        float toFireX = fireX - s.cx, toFireY = fireY - s.cy;
+        float distToFire = std::sqrt(toFireX*toFireX + toFireY*toFireY);
+        stepCount++;
+        if (distToFire <= cfg.hitRadius)
+            break;
+
+        updateDroneState(s, fireX, fireY, cfg);
+        s.currentTime += cfg.simTimeStep;
+    }
+
+    return stepCount;
+}
+
+// ============================================================
+// main
+// ============================================================
+
+int main() {
+    DroneConfig cfg;
+    if (!readInput(cfg))   return 1;
+    if (!loadTargets())    return 1;
+
+    int stepCount = runSimulation(cfg);
+    if (stepCount < 0) return 1;
+
+    if (!writeOutput(stepCount)) return 1;
 
     std::cout << "Done. Steps: " << stepCount
-              << ". Drop at: (" << cx << ", " << cy << ")\n";
+              << ". Drop at: (" << outX[stepCount-1] << ", " << outY[stepCount-1] << ")\n";
     return 0;
 }
