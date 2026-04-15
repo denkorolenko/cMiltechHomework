@@ -10,6 +10,8 @@ Denys Korolenko
 #include <cmath>
 #include <iomanip>
 
+#define _USE_MATH_DEFINES
+
 static const int   NUM_TARGETS = 5;
 static const int   TIME_STEPS  = 60;
 static const int   MAX_STEPS   = 10000;
