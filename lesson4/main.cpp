@@ -264,21 +264,21 @@ bool writeOutput(int stepCount) {
     }
 
     out << std::fixed << std::setprecision(3);
-    out << stepCount << "\n";
+    out << stepCount - 1 << "\n";
 
-    for (int i = 0; i < stepCount; i++)
+    for (int i = 0; i < stepCount; ++i)
         out << outX[i] << " " << outY[i] << " ";
     out << "\n";
 
-    for (int i = 0; i < stepCount; i++)
+    for (int i = 0; i < stepCount; ++i)
         out << outDir[i] << " ";
     out << "\n";
 
-    for (int i = 0; i < stepCount; i++)
+    for (int i = 0; i < stepCount; ++i)
         out << outState[i] << " ";
     out << "\n";
 
-    for (int i = 0; i < stepCount; i++)
+    for (int i = 0; i < stepCount; ++i)
         out << outTarget[i] << " ";
     out << "\n";
 
@@ -333,7 +333,8 @@ int selectBestTarget(const SimState& s, const DroneConfig& cfg,
                               fx2, fy2, hDist2, tFlight2))
             continue;
 
-        dxFire = fx2 - s.cx; dyFire = fy2 - s.cy;
+        dxFire = fx2 - s.cx;
+        dyFire = fy2 - s.cy;
         distFire = std::sqrt(dxFire*dxFire + dyFire*dyFire);
         droneFlightTime = distFire / cfg.attackSpeed + cfg.accelerationPath / cfg.attackSpeed;
         totalTime = droneFlightTime + tFlight2;
@@ -468,10 +469,13 @@ int runSimulation(const DroneConfig& cfg) {
         fireX = bestFireX;
         fireY = bestFireY;
 
-        float toFireX = fireX - s.cx, toFireY = fireY - s.cy;
+        float toFireX = fireX - s.cx;
+        float toFireY = fireY - s.cy;
         float distToFire = std::sqrt(toFireX*toFireX + toFireY*toFireY);
-        stepCount++;
-        if (distToFire <= cfg.hitRadius)
+        ++stepCount;
+
+        const float hitRadiusKoef = 0.5f; // прогнозоване попадання в межах половини радіуса ураження вважаємо успішним
+        if (distToFire <= cfg.hitRadius * hitRadiusKoef)
             break;
 
         updateDroneState(s, fireX, fireY, cfg);
@@ -495,7 +499,7 @@ int main() {
 
     if (!writeOutput(stepCount)) return 1;
 
-    std::cout << "Done. Steps: " << stepCount
+    std::cout << "Done. Steps: " << stepCount - 1
               << ". Drop at: (" << outX[stepCount-1] << ", " << outY[stepCount-1] << ")\n";
     return 0;
 }
