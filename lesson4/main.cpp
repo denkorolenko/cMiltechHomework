@@ -12,12 +12,13 @@ Denys Korolenko
 
 #define _USE_MATH_DEFINES
 
-// #define DEBUG_TEST_FOLDER "test5" // test1, test2, test3, test4, test5
+#define DEBUG_TEST_FOLDER "test5" // test1, test2, test3, test4, test5
 
 static const int   NUM_TARGETS = 5;
 static const int   TIME_STEPS  = 60;
 static const int   MAX_STEPS   = 10000;
-static const float G           = 9.81f;
+static const float G               = 9.81f;
+static const float HIT_RADIUS_KOEF = 0.5f;
 
 enum DroneState {
     STOPPED      = 0,
@@ -431,10 +432,45 @@ int selectBestTarget(const SimState& s, const DroneConfig& cfg,
 }
 
 // один крок стейт-машини дрона
-void updateDroneState(SimState& s, float fireX, float fireY, const DroneConfig& cfg) {
+void updateDroneState(SimState& s, float fireX, float fireY,
+                      float predTargetX, float predTargetY,
+                      const DroneConfig& cfg) {
     const float acceleration = cfg.attackSpeed * cfg.attackSpeed / (2.0f * cfg.accelerationPath);
 
     float toFireX = fireX - s.cx, toFireY = fireY - s.cy;
+    float distToFire = std::sqrt(toFireX*toFireX + toFireY*toFireY);
+
+    // В точці скиду: зупиняємось і повертаємось до прогнозованої цілі перед скидом
+    if (distToFire <= cfg.hitRadius * HIT_RADIUS_KOEF) {
+        if (s.vel > 0.0f) {
+            s.vel -= acceleration * cfg.simTimeStep;
+            if (s.vel > 0.0f) {
+                s.cx += s.vel * cfg.simTimeStep * std::cos(s.dir);
+                s.cy += s.vel * cfg.simTimeStep * std::sin(s.dir);
+                s.state = DECELERATING;
+                return;
+            }
+            s.vel   = 0.0f;
+            s.state = STOPPED;
+        }
+        float toPredX = predTargetX - s.cx, toPredY = predTargetY - s.cy;
+        float desiredDir = std::atan2(toPredY, toPredX);
+        float delta = angleDiff(s.dir, desiredDir);
+        if (std::fabs(delta) > cfg.turnThreshold) {
+            s.state = TURNING;
+            float turnStep = cfg.angularSpeed * cfg.simTimeStep;
+            float sign = (delta >= 0.0f) ? 1.0f : -1.0f;
+            if (std::fabs(delta) <= turnStep)
+                s.dir = desiredDir;
+            else
+                s.dir += sign * turnStep;
+        } else {
+            s.dir   = desiredDir;
+            s.state = STOPPED;
+        }
+        return;
+    }
+
     float desiredDir = std::atan2(toFireY, toFireX);
     float delta = angleDiff(s.dir, desiredDir);
 
@@ -546,11 +582,13 @@ int runSimulation(const DroneConfig& cfg) {
         float distToFire = std::sqrt(toFireX*toFireX + toFireY*toFireY);
         ++stepCount;
 
-        const float hitRadiusKoef = 0.5f; // прогнозоване попадання в межах половини радіуса ураження вважаємо успішним
-        if (distToFire <= cfg.hitRadius * hitRadiusKoef)
-            break;
+        if (distToFire <= cfg.hitRadius * HIT_RADIUS_KOEF) {
+            float dirToTarget = std::atan2(bestPredY - s.cy, bestPredX - s.cx);
+            if (std::fabs(angleDiff(s.dir, dirToTarget)) <= cfg.turnThreshold)
+                break; // в точці скиду і повернуті до цілі — скидаємо
+        }
 
-        updateDroneState(s, fireX, fireY, cfg);
+        updateDroneState(s, fireX, fireY, bestPredX, bestPredY, cfg);
         s.currentTime += cfg.simTimeStep;
     }
 
