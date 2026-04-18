@@ -12,13 +12,13 @@ Denys Korolenko
 
 #define _USE_MATH_DEFINES
 
-#define DEBUG_TEST_FOLDER "test5" // test1, test2, test3, test4, test5
+// #define DEBUG_TEST_FOLDER "test4" // test1, test2, test3, test4, test5
 
 static const int   NUM_TARGETS = 5;
 static const int   TIME_STEPS  = 60;
 static const int   MAX_STEPS   = 10000;
 static const float G               = 9.81f;
-static const float HIT_RADIUS_KOEF = 0.5f;
+static const float HIT_RADIUS_KOEF = 0.2f;
 
 enum DroneState {
     STOPPED      = 0,
@@ -456,18 +456,18 @@ void updateDroneState(SimState& s, float fireX, float fireY,
         float toPredX = predTargetX - s.cx, toPredY = predTargetY - s.cy;
         float desiredDir = std::atan2(toPredY, toPredX);
         float delta = angleDiff(s.dir, desiredDir);
-        if (std::fabs(delta) > cfg.turnThreshold) {
-            s.state = TURNING;
-            float turnStep = cfg.angularSpeed * cfg.simTimeStep;
-            float sign = (delta >= 0.0f) ? 1.0f : -1.0f;
-            if (std::fabs(delta) <= turnStep)
-                s.dir = desiredDir;
-            else
-                s.dir += sign * turnStep;
-        } else {
+        if (std::fabs(delta) <= cfg.turnThreshold) {
             s.dir   = desiredDir;
             s.state = STOPPED;
+            return;
         }
+        s.state = TURNING;
+        float turnStep = cfg.angularSpeed * cfg.simTimeStep;
+        float sign = (delta >= 0.0f) ? 1.0f : -1.0f;
+        if (std::fabs(delta) <= turnStep)
+            s.dir = desiredDir;
+        else
+            s.dir += sign * turnStep;
         return;
     }
 
