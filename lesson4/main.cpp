@@ -12,6 +12,8 @@ Denys Korolenko
 
 #define _USE_MATH_DEFINES
 
+// #define DEBUG_TEST_FOLDER "test3" // test1, test2, test3, test4, test5
+
 static const int   NUM_TARGETS = 5;
 static const int   TIME_STEPS  = 60;
 static const int   MAX_STEPS   = 10000;
@@ -40,6 +42,12 @@ static float outY[MAX_STEPS+1];
 static float outDir[MAX_STEPS+1];
 static int   outState[MAX_STEPS+1];
 static int   outTarget[MAX_STEPS+1];
+// масив для обраної точки скиду в поточний момент часу
+static float outFireX[MAX_STEPS+1];
+static float outFireY[MAX_STEPS+1];
+// масив для екстрапольованої позиції цілі у майбутнє, куди цілиться дрон
+static float outPredTargetX[MAX_STEPS+1];
+static float outPredTargetY[MAX_STEPS+1];
 
 struct DroneConfig {
     float x, y, z;
@@ -202,11 +210,19 @@ float angleDiff(float from, float to) {
 // ============================================================
 
 bool readInput(DroneConfig& cfg) {
+    #ifdef DEBUG_TEST_FOLDER
+    std::ifstream in( DEBUG_TEST_FOLDER "/input.txt");
+    if (!in.is_open()) {
+        std::cerr << "Error: cannot open " << DEBUG_TEST_FOLDER << "/input.txt\n";
+        return false;
+    }
+    #else
     std::ifstream in("input.txt");
     if (!in.is_open()) {
         std::cerr << "Error: cannot open input.txt\n";
         return false;
     }
+    #endif
 
     char ammo_name[64];
     in >> cfg.x >> cfg.y >> cfg.z
@@ -234,11 +250,19 @@ bool readInput(DroneConfig& cfg) {
 }
 
 bool loadTargets() {
+    #ifdef DEBUG_TEST_FOLDER
+    std::ifstream tf( DEBUG_TEST_FOLDER "/targets.txt");
+    if (!tf.is_open()) {
+        std::cerr << "Error: cannot open " << DEBUG_TEST_FOLDER << "/targets.txt\n";
+        return false;
+    }
+    #else
     std::ifstream tf("targets.txt");
     if (!tf.is_open()) {
         std::cerr << "Error: cannot open targets.txt\n";
         return false;
     }
+    #endif
 
     for (int i = 0; i < NUM_TARGETS; i++)
         for (int j = 0; j < TIME_STEPS; j++)
@@ -257,11 +281,19 @@ bool loadTargets() {
 }
 
 bool writeOutput(int stepCount) {
+    #ifdef DEBUG_TEST_FOLDER
+    std::ofstream out( DEBUG_TEST_FOLDER "/simulation.txt");
+    if (!out.is_open()) {
+        std::cerr << "Error: cannot open " << DEBUG_TEST_FOLDER << "/simulation.txt\n";
+        return false;
+    }
+    #else
     std::ofstream out("simulation.txt");
     if (!out.is_open()) {
         std::cerr << "Error: cannot open simulation.txt\n";
         return false;
     }
+    #endif
 
     out << std::fixed << std::setprecision(3);
     out << stepCount - 1 << "\n";
@@ -283,6 +315,29 @@ bool writeOutput(int stepCount) {
     out << "\n";
 
     out.close();
+
+    #ifdef DEBUG_TEST_FOLDER
+    // debug.txt для зручного перегляду результатів
+    // N
+    // масив для обраної точки скиду в поточний момент часу
+    // масив для екстрапольованої позиції цілі у майбутнє, куди цілиться дрон
+    std::ofstream dbg(DEBUG_TEST_FOLDER "/debug.txt");
+
+    dbg << std::fixed << std::setprecision(3);
+    dbg << stepCount - 1 << "\n";
+    
+    for (int i = 0; i < stepCount; ++i)
+        dbg << outFireX[i] << " " << outFireY[i] << " ";
+    dbg << "\n";
+
+    for (int i = 0; i < stepCount; ++i)
+        dbg << outPredTargetX[i] << " " << outPredTargetY[i] << " ";
+    dbg << "\n";
+
+    dbg.close();
+    #endif
+
+
     return true;
 }
 
@@ -293,7 +348,7 @@ bool writeOutput(int stepCount) {
 // вибір найкращої цілі з урахуванням lead targeting та штрафу за зміну
 // повертає індекс цілі або -1 якщо жодна не досяжна
 int selectBestTarget(const SimState& s, const DroneConfig& cfg,
-                     float& bestFireX, float& bestFireY) {
+                     float& bestFireX, float& bestFireY, float& bestPredX, float& bestPredY) {
     const float acceleration = cfg.attackSpeed * cfg.attackSpeed / (2.0f * cfg.accelerationPath);
 
     float tgtX[NUM_TARGETS], tgtY[NUM_TARGETS];
@@ -304,6 +359,9 @@ int selectBestTarget(const SimState& s, const DroneConfig& cfg,
     int   bestTarget    = -1;
     bestFireX = 0.0f;
     bestFireY = 0.0f;
+    bestPredX = 0.0f;
+    bestPredY = 0.0f;
+
 
     for (int i = 0; i < NUM_TARGETS; i++) {
         float tgtXNext, tgtYNext;
@@ -357,6 +415,8 @@ int selectBestTarget(const SimState& s, const DroneConfig& cfg,
             bestTarget    = i;
             bestFireX     = fx2;
             bestFireY     = fy2;
+            bestPredX     = predX;
+            bestPredY     = predY;
         }
     }
     return bestTarget;
@@ -460,7 +520,8 @@ int runSimulation(const DroneConfig& cfg) {
         outTarget[stepCount] = s.chosenTarget;
 
         float bestFireX, bestFireY;
-        int bestTarget = selectBestTarget(s, cfg, bestFireX, bestFireY);
+        float bestPredX, bestPredY;
+        int bestTarget = selectBestTarget(s, cfg, bestFireX, bestFireY, bestPredX, bestPredY);
         if (bestTarget < 0) {
             std::cerr << "Error: no reachable target\n";
             return -1;
@@ -468,7 +529,10 @@ int runSimulation(const DroneConfig& cfg) {
         s.chosenTarget = bestTarget;
         fireX = bestFireX;
         fireY = bestFireY;
-
+        outFireX[stepCount] = fireX;
+        outFireY[stepCount] = fireY;
+        outPredTargetX[stepCount] = bestPredX;
+        outPredTargetY[stepCount] = bestPredY;
         float toFireX = fireX - s.cx;
         float toFireY = fireY - s.cy;
         float distToFire = std::sqrt(toFireX*toFireX + toFireY*toFireY);
