@@ -413,8 +413,11 @@ void updateDroneState(SimState& s, Coord firePos, Coord predPos, const DroneConf
 
 DroneConfig readConfig(const char* filename) {
     std::ifstream f(filename);
-    if (!f.is_open())
-        throw std::runtime_error(std::string("Cannot open ") + filename);
+    if (!f.is_open()) {
+        char errMsg[256];
+        std::snprintf(errMsg, sizeof(errMsg), "Cannot open %s", filename);
+        throw std::runtime_error(errMsg);
+    }
     json j; f >> j;
 
     DroneConfig cfg;
@@ -441,8 +444,11 @@ DroneConfig readConfig(const char* filename) {
 
 AmmoParams* readAmmo(const char* filename, const char* ammoName, int& ammoCount, int& selectedIdx) {
     std::ifstream f(filename);
-    if (!f.is_open())
-        throw std::runtime_error(std::string("Cannot open ") + filename);
+    if (!f.is_open()) {
+        char errMsg[256];
+        std::snprintf(errMsg, sizeof(errMsg), "Cannot open %s", filename);
+        throw std::runtime_error(errMsg);
+    }
     json j; f >> j;
 
     ammoCount = static_cast<int>(j.size());
@@ -471,8 +477,11 @@ AmmoParams* readAmmo(const char* filename, const char* ammoName, int& ammoCount,
 
 Coord** readTargets(const char* filename, int& targetCount, int& timeSteps) {
     std::ifstream f(filename);
-    if (!f.is_open())
-        throw std::runtime_error(std::string("Cannot open ") + filename);
+    if (!f.is_open()) {
+        char errMsg[256];
+        std::snprintf(errMsg, sizeof(errMsg), "Cannot open %s", filename);
+        throw std::runtime_error(errMsg);
+    }
     json j; f >> j;
 
     targetCount = j["targetCount"];
