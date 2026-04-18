@@ -1,5 +1,5 @@
 /******************************************************************************
-Homework for Lesson 4
+Homework for Lesson 6
 Denys Korolenko
 *******************************************************************************/
 #include <iostream>
@@ -10,13 +10,34 @@ Denys Korolenko
 #include <cmath>
 #include <iomanip>
 
+// Підключення бібліотеки для роботи з JSON
+#include "json.hpp"
+using json = nlohmann::json;
+
 #define _USE_MATH_DEFINES
 
-// #define DEBUG_TEST_FOLDER "test4" // test1, test2, test3, test4, test5
+// ============================================================
+// Макроси логування
+// ============================================================
+#define ENABLE_LOG    1
+#define ENABLE_DEBUG  0
 
-static const int   NUM_TARGETS = 5;
-static const int   TIME_STEPS  = 60;
-static const int   MAX_STEPS   = 10000;
+#if ENABLE_LOG
+  #define LOG(msg) std::cout << "[LOG] " << msg << std::endl
+#else
+  #define LOG(msg)
+#endif
+
+#if ENABLE_DEBUG
+  #define DEBUG(msg) std::cout << "[DEBUG] " << msg << std::endl
+#else
+  #define DEBUG(msg)
+#endif
+
+// ============================================================
+// Константи
+// ============================================================
+static const int   MAX_STEPS       = 10000;
 static const float G               = 9.81f;
 static const float HIT_RADIUS_KOEF = 0.2f;
 
@@ -28,34 +49,49 @@ enum DroneState {
     MOVING       = 4
 };
 
-// боєприпаси: назва, маса, лобовий опір, підйомна сила
-static const char  bombNames[][15] = {"VOG-17","M67","RKG-3","GLIDING-VOG","GLIDING-RKG"};
-static const float bombM[] = {0.35f, 0.6f, 1.2f, 0.45f, 1.4f};
-static const float bombD[] = {0.07f, 0.10f, 0.10f, 0.10f, 0.10f};
-static const float bombL[] = {0.0f,  0.0f,  0.0f,  1.0f,  1.0f};
+// ============================================================
+// Структури
+// ============================================================
 
-static float targetXInTime[NUM_TARGETS][TIME_STEPS];
-static float targetYInTime[NUM_TARGETS][TIME_STEPS];
+struct Coord {
+    float x;
+    float y;
 
-// буфери для запису траєкторії
-static float outX[MAX_STEPS+1];
-static float outY[MAX_STEPS+1];
-static float outDir[MAX_STEPS+1];
-static int   outState[MAX_STEPS+1];
-static int   outTarget[MAX_STEPS+1];
-// масив для обраної точки скиду в поточний момент часу
-static float outFireX[MAX_STEPS+1];
-static float outFireY[MAX_STEPS+1];
-// масив для екстрапольованої позиції цілі у майбутнє, куди цілиться дрон
-static float outPredTargetX[MAX_STEPS+1];
-static float outPredTargetY[MAX_STEPS+1];
+    Coord operator+(const Coord& other) const {
+        return {x + other.x, y + other.y};
+    }
+    
+    Coord operator-(const Coord& other) const {
+        return {x - other.x, y - other.y};
+    }
+    
+    Coord operator*(float s) const {
+        return {x * s, y * s};
+    }
+    
+    Coord operator/(float s) const {
+        return {x / s, y / s};
+    }
+    
+    bool operator==(const Coord& other) const {
+        return (std::fabs(x - other.x) < 1e-6f && std::fabs(y - other.y) < 1e-6f);
+    }
+};
+
+struct AmmoParams {
+    char name[32];
+    float mass;
+    float drag;
+    float lift;
+};
 
 struct DroneConfig {
-    float x, y, z;
+    Coord startPos;
+    float altitude;
     float initialDir;
     float attackSpeed;
-    float accelerationPath;
-    float m, d, l;          // властивості боєприпасу
+    float accelPath;
+    char ammoName[32];
     float arrayTimeStep;
     float simTimeStep;
     float hitRadius;
@@ -63,44 +99,54 @@ struct DroneConfig {
     float turnThreshold;
 };
 
+struct SimStep {
+    Coord pos;
+    float direction;
+    int state;
+    int targetIdx;
+};
+
+// Внутрішній стан симуляції для стейт-машини
 struct SimState {
-    float cx, cy;
-    float dir, vel;
-    DroneState state;
+    Coord pos;
+    float dir;
+    float vel;
+    int state;
     float currentTime;
     float turnTarget;
     float turnRemain;
-    int   chosenTarget;
+    int chosenTarget;
 };
 
 // ============================================================
-// Утилітарні фізичні функції
+// Допоміжні та математичні функції
 // ============================================================
 
-int findAmmoIndex(const char* name) {
-    for (int i = 0; i < 5; i++) {
-        if (std::strcmp(bombNames[i], name) == 0) return i;
-    }
-    return -1;
+float length(Coord c) {
+    return std::hypot(c.x, c.y);
 }
 
-// розв'язок кубічного рівняння методом Кардано: a*t^3 + b*t^2 + c = 0
+Coord normalize(Coord c) {
+    float l = length(c);
+    if (l < 1e-6f) return {0.0f, 0.0f};
+    return c / l;
+}
+
 float solveCubicTime(float a, float b, float c) {
     const float EPS = 1e-6f;
-
-    if (fabs(a) < EPS)
+    if (std::fabs(a) < EPS)
         throw std::runtime_error("Coefficient 'a' is too close to zero");
 
     float p = -b * b / (3.0f * a * a);
     float q = (2.0f * b * b * b) / (27.0f * a * a * a) + c / a;
-    float arg = 3.0f * q / (2.0f * p) * sqrtf(-3.0f / p);
+    float arg = 3.0f * q / (2.0f * p) * std::sqrt(-3.0f / p);
 
     if (arg < -1.0f - EPS || arg > 1.0f + EPS)
-        throw std::runtime_error("acos argument out of range: " + std::to_string(arg));
+        throw std::runtime_error("acos argument out of range");
 
-    arg = std::max(-1.0f, std::min(1.0f, arg)); // на випадок флотингових похибок
-    float phi = acosf(arg);
-    float t = 2.0f * sqrtf(-p / 3.0f) * cosf((phi + 4.0f * M_PI) / 3.0f) - b / (3.0f * a);
+    arg = std::max(-1.0f, std::min(1.0f, arg));
+    float phi = std::acos(arg);
+    float t = 2.0f * std::sqrt(-p / 3.0f) * std::cos((phi + 4.0f * M_PI) / 3.0f) - b / (3.0f * a);
     return t;
 }
 
@@ -111,302 +157,129 @@ float computeFlightTime(float z0, float V0, float m, float d, float l) {
     return solveCubicTime(a, b, c);
 }
 
-// горизонтальна дальність польоту (розклад у ряд до t^5)
 float computeHorizontalDistance(float t, float V0, float m, float d, float l) {
     float term1 = V0 * t;
-
-    float term2 = -(powf(t, 2) * d * V0) / (2.0f * m);
-
-    float term3 =
-        powf(t, 3) * (6.0f * d * G * l * m - 6.0f * d * d * (powf(l, 2) - 1) * V0) /
-        (36.0f * m * m);
-
-    float term4 =
-        (powf(t, 4) * (
-            -6.0f * d * d * G * l * (1.0f + powf(l, 2) + powf(l, 4)) * m +
-             3.0f * powf(d, 3) * powf(l, 2) * (1.0f + powf(l, 2)) * V0 +
-             6.0f * powf(d, 3) * powf(l, 4) * (1.0f + powf(l, 2)) * V0
-        )) /
-        (36.0f * powf(1.0f + powf(l, 2), 2) * powf(m, 3));
-
-    float term5 =
-        (powf(t, 5) * (
-             3.0f * powf(d, 3) * G * powf(l, 3) * m -
-             3.0f * powf(d, 4) * powf(l, 2) * (1.0f + powf(l, 2)) * V0
-        )) /
-        (36.0f * (1.0f + powf(l, 2)) * powf(m, 4));
+    float term2 = -(std::pow(t, 2.0f) * d * V0) / (2.0f * m);
+    float term3 = std::pow(t, 3.0f) * (6.0f * d * G * l * m - 6.0f * d * d * (std::pow(l, 2.0f) - 1.0f) * V0) / (36.0f * m * m);
+    
+    float term4 = (std::pow(t, 4.0f) * (
+            -6.0f * d * d * G * l * (1.0f + std::pow(l, 2.0f) + std::pow(l, 4.0f)) * m +
+             3.0f * std::pow(d, 3.0f) * std::pow(l, 2.0f) * (1.0f + std::pow(l, 2.0f)) * V0 +
+             6.0f * std::pow(d, 3.0f) * std::pow(l, 4.0f) * (1.0f + std::pow(l, 2.0f)) * V0
+        )) / (36.0f * std::pow(1.0f + std::pow(l, 2.0f), 2.0f) * std::pow(m, 3.0f));
+        
+    float term5 = (std::pow(t, 5.0f) * (
+             3.0f * std::pow(d, 3.0f) * G * std::pow(l, 3.0f) * m -
+             3.0f * std::pow(d, 4.0f) * std::pow(l, 2.0f) * (1.0f + std::pow(l, 2.0f)) * V0
+        )) / (36.0f * (1.0f + std::pow(l, 2.0f)) * std::pow(m, 4.0f));
 
     return term1 + term2 + term3 + term4 + term5;
 }
 
-void interpolateTarget(int targetIdx, float t, float arrayTimeStep,
-                       float& outTx, float& outTy) {
-    int   idx  = static_cast<int>(std::floor(t / arrayTimeStep)) % TIME_STEPS;
-    int   next = (idx + 1) % TIME_STEPS;
+Coord interpolateTarget(Coord** targets, int timeSteps, int targetIdx, float t, float arrayTimeStep) {
+    int idx = static_cast<int>(std::floor(t / arrayTimeStep)) % timeSteps;
+    int next = (idx + 1) % timeSteps;
     float frac = (t - idx * arrayTimeStep) / arrayTimeStep;
-    outTx = targetXInTime[targetIdx][idx] + (targetXInTime[targetIdx][next] - targetXInTime[targetIdx][idx]) * frac;
-    outTy = targetYInTime[targetIdx][idx] + (targetYInTime[targetIdx][next] - targetYInTime[targetIdx][idx]) * frac;
+    
+    // Використання перевантажених операторів
+    return targets[targetIdx][idx] + (targets[targetIdx][next] - targets[targetIdx][idx]) * frac;
 }
 
-// обчислює точку скиду та приблизний час польоту до неї
-// повертає false якщо балістика не збіглась
-bool computeFirePoint(float droneX, float droneY, float droneZ,
-                      float tgtX, float tgtY,
-                      float V0, float accPath,
-                      float m, float d, float l,
-                      float& fireX, float& fireY,
-                      float& flightDist, float& flightTime) {
+bool computeFirePoint(Coord dronePos, float droneZ, Coord tgtPos,
+                      float V0, float accPath, float m, float d, float l,
+                      Coord& firePos, float& flightDist, float& flightTime) {
     try {
         const float EPS = 1e-6f;
         flightTime = computeFlightTime(droneZ, V0, m, d, l);
         flightDist = computeHorizontalDistance(flightTime, V0, m, d, l);
-        if (fabs(flightTime) <= EPS || fabs(flightDist) <= EPS)
+        if (std::fabs(flightTime) <= EPS || std::fabs(flightDist) <= EPS)
             return false;
 
-        float dx = tgtX - droneX;
-        float dy = tgtY - droneY;
-        float D  = std::sqrt(dx*dx + dy*dy);
-
-        float curX = droneX, curY = droneY;
+        Coord delta = tgtPos - dronePos;
+        float D = length(delta);
+        Coord curPos = dronePos;
 
         if (flightDist + accPath > D) {
-            // треба відлетіти далі щоб набрати відстань для скиду
-            if (fabs(D) < EPS) {
-                curX = droneX + flightDist + accPath;
-                curY = droneY;
+            if (std::fabs(D) < EPS) {
+                curPos.x = dronePos.x + flightDist + accPath;
+                curPos.y = dronePos.y;
             } else {
                 float r = (flightDist + accPath) / D;
-                curX = tgtX - (tgtX - droneX) * r;
-                curY = tgtY - (tgtY - droneY) * r;
+                curPos = tgtPos - delta * r; // Перевантаження операторів
             }
-            dx = tgtX - curX;
-            dy = tgtY - curY;
-            D  = std::sqrt(dx*dx + dy*dy);
+            delta = tgtPos - curPos;
+            D = length(delta);
         }
 
-        if (fabs(D) < EPS) {
-            fireX = curX;
-            fireY = curY;
+        if (std::fabs(D) < EPS) {
+            firePos = curPos;
             return true;
         }
         float ratio = (D - flightDist) / D;
-        fireX = curX + (tgtX - curX) * ratio;
-        fireY = curY + (tgtY - curY) * ratio;
+        firePos = curPos + (tgtPos - curPos) * ratio;
     } catch (...) {
         return false;
     }
     return true;
 }
 
-// різниця кутів у діапазоні [-pi, pi]
 float angleDiff(float from, float to) {
     float diff = to - from;
-    diff = fmodf(diff + M_PI, 2.0f * M_PI);
+    diff = std::fmod(diff + M_PI, 2.0f * M_PI);
     if (diff < 0.0f) diff += 2.0f * M_PI;
     return diff - M_PI;
-}
-
-// ============================================================
-// Введення / виведення
-// ============================================================
-
-bool readInput(DroneConfig& cfg) {
-    #ifdef DEBUG_TEST_FOLDER
-    std::ifstream in( DEBUG_TEST_FOLDER "/input.txt");
-    if (!in.is_open()) {
-        std::cerr << "Error: cannot open " << DEBUG_TEST_FOLDER << "/input.txt\n";
-        return false;
-    }
-    #else
-    std::ifstream in("input.txt");
-    if (!in.is_open()) {
-        std::cerr << "Error: cannot open input.txt\n";
-        return false;
-    }
-    #endif
-
-    char ammo_name[64];
-    in >> cfg.x >> cfg.y >> cfg.z
-       >> cfg.initialDir
-       >> cfg.attackSpeed >> cfg.accelerationPath
-       >> ammo_name
-       >> cfg.arrayTimeStep >> cfg.simTimeStep
-       >> cfg.hitRadius >> cfg.angularSpeed >> cfg.turnThreshold;
-
-    if (in.fail()) {
-        std::cerr << "Error: invalid input.txt format\n";
-        return false;
-    }
-    in.close();
-
-    int ammoIdx = findAmmoIndex(ammo_name);
-    if (ammoIdx < 0) {
-        std::cerr << "Error: unknown ammo type: " << ammo_name << "\n";
-        return false;
-    }
-    cfg.m = bombM[ammoIdx];
-    cfg.d = bombD[ammoIdx];
-    cfg.l = bombL[ammoIdx];
-    return true;
-}
-
-bool loadTargets() {
-    #ifdef DEBUG_TEST_FOLDER
-    std::ifstream tf( DEBUG_TEST_FOLDER "/targets.txt");
-    if (!tf.is_open()) {
-        std::cerr << "Error: cannot open " << DEBUG_TEST_FOLDER << "/targets.txt\n";
-        return false;
-    }
-    #else
-    std::ifstream tf("targets.txt");
-    if (!tf.is_open()) {
-        std::cerr << "Error: cannot open targets.txt\n";
-        return false;
-    }
-    #endif
-
-    for (int i = 0; i < NUM_TARGETS; i++)
-        for (int j = 0; j < TIME_STEPS; j++)
-            tf >> targetXInTime[i][j];
-
-    for (int i = 0; i < NUM_TARGETS; i++)
-        for (int j = 0; j < TIME_STEPS; j++)
-            tf >> targetYInTime[i][j];
-
-    if (tf.fail()) {
-        std::cerr << "Error: invalid targets.txt format\n";
-        return false;
-    }
-    tf.close();
-    return true;
-}
-
-bool writeOutput(int stepCount) {
-    #ifdef DEBUG_TEST_FOLDER
-    std::ofstream out( DEBUG_TEST_FOLDER "/simulation.txt");
-    if (!out.is_open()) {
-        std::cerr << "Error: cannot open " << DEBUG_TEST_FOLDER << "/simulation.txt\n";
-        return false;
-    }
-    #else
-    std::ofstream out("simulation.txt");
-    if (!out.is_open()) {
-        std::cerr << "Error: cannot open simulation.txt\n";
-        return false;
-    }
-    #endif
-
-    out << std::fixed << std::setprecision(3);
-    out << stepCount - 1 << "\n";
-
-    for (int i = 0; i < stepCount; ++i)
-        out << outX[i] << " " << outY[i] << " ";
-    out << "\n";
-
-    for (int i = 0; i < stepCount; ++i)
-        out << outDir[i] << " ";
-    out << "\n";
-
-    for (int i = 0; i < stepCount; ++i)
-        out << outState[i] << " ";
-    out << "\n";
-
-    for (int i = 0; i < stepCount; ++i)
-        out << outTarget[i] << " ";
-    out << "\n";
-
-    out.close();
-
-    #ifdef DEBUG_TEST_FOLDER
-    // debug.txt для зручного перегляду результатів
-    // N
-    // масив для обраної точки скиду в поточний момент часу
-    // масив для екстрапольованої позиції цілі у майбутнє, куди цілиться дрон
-    std::ofstream dbg(DEBUG_TEST_FOLDER "/debug.txt");
-
-    dbg << std::fixed << std::setprecision(3);
-    dbg << stepCount - 1 << "\n";
-    
-    for (int i = 0; i < stepCount; ++i)
-        dbg << outFireX[i] << " " << outFireY[i] << " ";
-    dbg << "\n";
-
-    for (int i = 0; i < stepCount; ++i)
-        dbg << outPredTargetX[i] << " " << outPredTargetY[i] << " ";
-    dbg << "\n";
-
-    dbg.close();
-    #endif
-
-
-    return true;
 }
 
 // ============================================================
 // Логіка симуляції
 // ============================================================
 
-// вибір найкращої цілі з урахуванням lead targeting та штрафу за зміну
-// повертає індекс цілі або -1 якщо жодна не досяжна
-int selectBestTarget(const SimState& s, const DroneConfig& cfg,
-                     float& bestFireX, float& bestFireY, float& bestPredX, float& bestPredY) {
-    const float acceleration = cfg.attackSpeed * cfg.attackSpeed / (2.0f * cfg.accelerationPath);
-
-    float tgtX[NUM_TARGETS], tgtY[NUM_TARGETS];
-    for (int i = 0; i < NUM_TARGETS; i++)
-        interpolateTarget(i, s.currentTime, cfg.arrayTimeStep, tgtX[i], tgtY[i]);
-
+int selectBestTarget(const SimState& s, const DroneConfig& cfg, const AmmoParams& ammo,
+                     Coord** targets, int targetCount, int timeSteps,
+                     Coord& bestFirePos, Coord& bestPredPos) {
+                         
+    const float acceleration = cfg.attackSpeed * cfg.attackSpeed / (2.0f * cfg.accelPath);
     float bestTotalTime = 1e18f;
-    int   bestTarget    = -1;
-    bestFireX = 0.0f;
-    bestFireY = 0.0f;
-    bestPredX = 0.0f;
-    bestPredY = 0.0f;
+    int bestTarget = -1;
+    
+    bestFirePos = {0.0f, 0.0f};
+    bestPredPos = {0.0f, 0.0f};
 
+    for (int i = 0; i < targetCount; i++) {
+        Coord tgtPos  = interpolateTarget(targets, timeSteps, i, s.currentTime, cfg.arrayTimeStep);
+        Coord tgtNext = interpolateTarget(targets, timeSteps, i, s.currentTime + cfg.simTimeStep, cfg.arrayTimeStep);
 
-    for (int i = 0; i < NUM_TARGETS; i++) {
-        float tgtXNext, tgtYNext;
-        interpolateTarget(i, s.currentTime + cfg.simTimeStep, cfg.arrayTimeStep, tgtXNext, tgtYNext);
-        float tvx = (tgtXNext - tgtX[i]) / cfg.simTimeStep;
-        float tvy = (tgtYNext - tgtY[i]) / cfg.simTimeStep;
+        Coord tVel = (tgtNext - tgtPos) / cfg.simTimeStep;
 
-        // перша оцінка часу — до поточної позиції цілі
-        float fx, fy, hDist, tFlight;
-        if (!computeFirePoint(s.cx, s.cy, cfg.z, tgtX[i], tgtY[i],
-                              cfg.attackSpeed, cfg.accelerationPath, cfg.m, cfg.d, cfg.l,
-                              fx, fy, hDist, tFlight))
-            continue;
+        Coord fPos1;
+        float hDist1, tFlight1;
+        if (!computeFirePoint(s.pos, cfg.altitude, tgtPos,
+                              cfg.attackSpeed, cfg.accelPath, ammo.mass, ammo.drag, ammo.lift,
+                              fPos1, hDist1, tFlight1)) continue;
 
-        float dxFire = fx - s.cx, dyFire = fy - s.cy;
-        float distFire = std::sqrt(dxFire*dxFire + dyFire*dyFire);
-        float droneFlightTime = distFire / cfg.attackSpeed + cfg.accelerationPath / cfg.attackSpeed;
-        float totalTime = droneFlightTime + tFlight;
+        Coord fDelta1 = fPos1 - s.pos;
+        float distFire1 = length(fDelta1);
+        float droneFlightTime = distFire1 / cfg.attackSpeed + cfg.accelPath / cfg.attackSpeed;
+        float totalTime = droneFlightTime + tFlight1;
 
-        // прогнозована позиція і повторний розрахунок
-        float predX = tgtX[i] + tvx * totalTime;
-        float predY = tgtY[i] + tvy * totalTime;
+        Coord predPos = tgtPos + tVel * totalTime;
 
-        float fx2, fy2, hDist2, tFlight2;
-        if (!computeFirePoint(s.cx, s.cy, cfg.z, predX, predY,
-                              cfg.attackSpeed, cfg.accelerationPath, cfg.m, cfg.d, cfg.l,
-                              fx2, fy2, hDist2, tFlight2))
-            continue;
+        Coord fPos2;
+        float hDist2, tFlight2;
+        if (!computeFirePoint(s.pos, cfg.altitude, predPos,
+                              cfg.attackSpeed, cfg.accelPath, ammo.mass, ammo.drag, ammo.lift,
+                              fPos2, hDist2, tFlight2)) continue;
 
-        dxFire = fx2 - s.cx;
-        dyFire = fy2 - s.cy;
-        distFire = std::sqrt(dxFire*dxFire + dyFire*dyFire);
-        droneFlightTime = distFire / cfg.attackSpeed + cfg.accelerationPath / cfg.attackSpeed;
+        Coord fDelta2 = fPos2 - s.pos;
+        float distFire2 = length(fDelta2);
+        droneFlightTime = distFire2 / cfg.attackSpeed + cfg.accelPath / cfg.attackSpeed;
         totalTime = droneFlightTime + tFlight2;
 
-        // час розвороту у точці скиду: напрямок підльоту vs напрямок до цілі
-        {
-            float dirApproach  = std::atan2(dyFire, dxFire);
-            float dirFireToTgt = std::atan2(predY - fy2, predX - fx2);
-            float turnAtFire   = std::fabs(angleDiff(dirApproach, dirFireToTgt)) / cfg.angularSpeed;
-            totalTime += turnAtFire;
-        }
+        float dirApproach  = std::atan2(fDelta2.y, fDelta2.x);
+        float dirFireToTgt = std::atan2(predPos.y - fPos2.y, predPos.x - fPos2.x);
+        float turnAtFire   = std::fabs(angleDiff(dirApproach, dirFireToTgt)) / cfg.angularSpeed;
+        totalTime += turnAtFire;
 
-        // штраф за зміну цілі
         if (i != s.chosenTarget) {
             float timeToStop = 0.0f;
             switch (s.state) {
@@ -422,42 +295,36 @@ int selectBestTarget(const SimState& s, const DroneConfig& cfg,
         if (totalTime < bestTotalTime) {
             bestTotalTime = totalTime;
             bestTarget    = i;
-            bestFireX     = fx2;
-            bestFireY     = fy2;
-            bestPredX     = predX;
-            bestPredY     = predY;
+            bestFirePos   = fPos2;
+            bestPredPos   = predPos;
         }
     }
     return bestTarget;
 }
 
-// один крок стейт-машини дрона
-void updateDroneState(SimState& s, float fireX, float fireY,
-                      float predTargetX, float predTargetY,
-                      const DroneConfig& cfg) {
-    const float acceleration = cfg.attackSpeed * cfg.attackSpeed / (2.0f * cfg.accelerationPath);
+void updateDroneState(SimState& s, Coord firePos, Coord predPos, const DroneConfig& cfg) {
+    const float acceleration = cfg.attackSpeed * cfg.attackSpeed / (2.0f * cfg.accelPath);
 
-    float toFireX = fireX - s.cx, toFireY = fireY - s.cy;
-    float distToFire = std::sqrt(toFireX*toFireX + toFireY*toFireY);
+    Coord toFire = firePos - s.pos;
+    float distToFire = length(toFire);
 
-    // В точці скиду: зупиняємось і повертаємось до прогнозованої цілі перед скидом
     if (distToFire <= cfg.hitRadius * HIT_RADIUS_KOEF) {
         if (s.vel > 0.0f) {
             s.vel -= acceleration * cfg.simTimeStep;
             if (s.vel > 0.0f) {
-                s.cx += s.vel * cfg.simTimeStep * std::cos(s.dir);
-                s.cy += s.vel * cfg.simTimeStep * std::sin(s.dir);
+                s.pos.x += s.vel * cfg.simTimeStep * std::cos(s.dir);
+                s.pos.y += s.vel * cfg.simTimeStep * std::sin(s.dir);
                 s.state = DECELERATING;
                 return;
             }
-            s.vel   = 0.0f;
+            s.vel = 0.0f;
             s.state = STOPPED;
         }
-        float toPredX = predTargetX - s.cx, toPredY = predTargetY - s.cy;
-        float desiredDir = std::atan2(toPredY, toPredX);
+        Coord toPred = predPos - s.pos;
+        float desiredDir = std::atan2(toPred.y, toPred.x);
         float delta = angleDiff(s.dir, desiredDir);
         if (std::fabs(delta) <= cfg.turnThreshold) {
-            s.dir   = desiredDir;
+            s.dir = desiredDir;
             s.state = STOPPED;
             return;
         }
@@ -471,7 +338,7 @@ void updateDroneState(SimState& s, float fireX, float fireY,
         return;
     }
 
-    float desiredDir = std::atan2(toFireY, toFireX);
+    float desiredDir = std::atan2(toFire.y, toFire.x);
     float delta = angleDiff(s.dir, desiredDir);
 
     switch (s.state) {
@@ -510,8 +377,8 @@ void updateDroneState(SimState& s, float fireX, float fireY,
                 s.vel   = cfg.attackSpeed;
                 s.state = MOVING;
             }
-            s.cx += s.vel * cfg.simTimeStep * std::cos(s.dir);
-            s.cy += s.vel * cfg.simTimeStep * std::sin(s.dir);
+            s.pos.x += s.vel * cfg.simTimeStep * std::cos(s.dir);
+            s.pos.y += s.vel * cfg.simTimeStep * std::sin(s.dir);
             break;
         }
         case MOVING: {
@@ -520,8 +387,8 @@ void updateDroneState(SimState& s, float fireX, float fireY,
                 break;
             }
             s.dir = desiredDir;
-            s.cx += s.vel * cfg.simTimeStep * std::cos(s.dir);
-            s.cy += s.vel * cfg.simTimeStep * std::sin(s.dir);
+            s.pos.x += s.vel * cfg.simTimeStep * std::cos(s.dir);
+            s.pos.y += s.vel * cfg.simTimeStep * std::sin(s.dir);
             break;
         }
         case DECELERATING: {
@@ -532,84 +399,203 @@ void updateDroneState(SimState& s, float fireX, float fireY,
                 s.turnTarget = desiredDir;
                 s.turnRemain = std::fabs(angleDiff(s.dir, desiredDir));
             } else {
-                s.cx += s.vel * cfg.simTimeStep * std::cos(s.dir);
-                s.cy += s.vel * cfg.simTimeStep * std::sin(s.dir);
+                s.pos.x += s.vel * cfg.simTimeStep * std::cos(s.dir);
+                s.pos.y += s.vel * cfg.simTimeStep * std::sin(s.dir);
             }
             break;
         }
     }
 }
 
-// основний цикл симуляції; повертає кількість кроків або -1 при помилці
-int runSimulation(const DroneConfig& cfg) {
+// ============================================================
+// Функції введення / виведення / очищення
+// ============================================================
+
+DroneConfig readConfig(const char* filename) {
+    std::ifstream f(filename);
+    if (!f.is_open())
+        throw std::runtime_error(std::string("Cannot open ") + filename);
+    json j; f >> j;
+
+    DroneConfig cfg;
+    cfg.startPos.x    = j["drone"]["position"]["x"];
+    cfg.startPos.y    = j["drone"]["position"]["y"];
+    cfg.altitude      = j["drone"]["altitude"];
+    cfg.initialDir    = j["drone"]["initialDirection"];
+    cfg.attackSpeed   = j["drone"]["attackSpeed"];
+    cfg.accelPath     = j["drone"]["accelerationPath"];
+    cfg.angularSpeed  = j["drone"]["angularSpeed"];
+    cfg.turnThreshold = j["drone"]["turnThreshold"];
+
+    // Обходимо std::string, копіюючи безпосередньо масив символів
+    std::strncpy(cfg.ammoName, j["ammo"].get<std::string>().c_str(), sizeof(cfg.ammoName)-1);
+    cfg.ammoName[sizeof(cfg.ammoName)-1] = '\0';
+
+    cfg.simTimeStep   = j["simulation"]["timeStep"];
+    cfg.hitRadius     = j["simulation"]["hitRadius"];
+    cfg.arrayTimeStep = j["targetArrayTimeStep"];
+
+    LOG("Config loaded: speed=" << cfg.attackSpeed);
+    return cfg;
+}
+
+AmmoParams* readAmmo(const char* filename, const char* ammoName, int& ammoCount, int& selectedIdx) {
+    std::ifstream f(filename);
+    if (!f.is_open())
+        throw std::runtime_error(std::string("Cannot open ") + filename);
+    json j; f >> j;
+
+    ammoCount = static_cast<int>(j.size());
+    AmmoParams* ammos = new AmmoParams[ammoCount];
+    selectedIdx = -1;
+
+    for (int i = 0; i < ammoCount; i++) {
+        std::strncpy(ammos[i].name, j[i]["name"].get<std::string>().c_str(), sizeof(ammos[i].name)-1);
+        ammos[i].name[sizeof(ammos[i].name)-1] = '\0';
+        ammos[i].mass = j[i]["mass"];
+        ammos[i].drag = j[i]["drag"];
+        ammos[i].lift = j[i]["lift"];
+
+        if (std::strcmp(ammos[i].name, ammoName) == 0)
+            selectedIdx = i;
+    }
+
+    if (selectedIdx == -1) {
+        delete[] ammos;
+        throw std::runtime_error("Selected ammo not found in ammo.json");
+    }
+
+    LOG("Ammo found: " << ammos[selectedIdx].name);
+    return ammos;
+}
+
+Coord** readTargets(const char* filename, int& targetCount, int& timeSteps) {
+    std::ifstream f(filename);
+    if (!f.is_open())
+        throw std::runtime_error(std::string("Cannot open ") + filename);
+    json j; f >> j;
+
+    targetCount = j["targetCount"];
+    timeSteps   = j["timeSteps"];
+
+    Coord** targets = new Coord*[targetCount];
+    for (int i = 0; i < targetCount; i++) {
+        targets[i] = new Coord[timeSteps];
+        for (int k = 0; k < timeSteps; k++) {
+            targets[i][k].x = j["targets"][i]["positions"][k]["x"];
+            targets[i][k].y = j["targets"][i]["positions"][k]["y"];
+        }
+    }
+    return targets;
+}
+
+int runSimulation(const DroneConfig& cfg, const AmmoParams& ammo,
+                  Coord** targets, int targetCount, int timeSteps,
+                  SimStep* steps) {
+    int stepCount = 0;
+
     SimState s;
-    s.cx          = cfg.x;
-    s.cy          = cfg.y;
-    s.dir         = cfg.initialDir;
-    s.vel         = 0.0f;
-    s.state       = STOPPED;
-    s.currentTime = 0.0f;
-    s.turnTarget  = cfg.initialDir;
-    s.turnRemain  = 0.0f;
+    s.pos          = cfg.startPos;
+    s.dir          = cfg.initialDir;
+    s.vel          = 0.0f;
+    s.state        = STOPPED;
+    s.currentTime  = 0.0f;
+    s.turnTarget   = cfg.initialDir;
+    s.turnRemain   = 0.0f;
     s.chosenTarget = 0;
 
-    float fireX = 0.0f, fireY = 0.0f;
-    int   stepCount = 0;
-
     while (stepCount < MAX_STEPS) {
-        outX[stepCount]      = s.cx;
-        outY[stepCount]      = s.cy;
-        outDir[stepCount]    = s.dir;
-        outState[stepCount]  = s.state;
-        outTarget[stepCount] = s.chosenTarget;
+        steps[stepCount].pos       = s.pos;
+        steps[stepCount].direction = s.dir;
+        steps[stepCount].state     = s.state;
+        steps[stepCount].targetIdx = s.chosenTarget;
 
-        float bestFireX, bestFireY;
-        float bestPredX, bestPredY;
-        int bestTarget = selectBestTarget(s, cfg, bestFireX, bestFireY, bestPredX, bestPredY);
+        Coord bestFirePos, bestPredPos;
+        int bestTarget = selectBestTarget(s, cfg, ammo, targets, targetCount, timeSteps, bestFirePos, bestPredPos);
+
         if (bestTarget < 0) {
             std::cerr << "Error: no reachable target\n";
-            return -1;
+            break;
         }
+
         s.chosenTarget = bestTarget;
-        fireX = bestFireX;
-        fireY = bestFireY;
-        outFireX[stepCount] = fireX;
-        outFireY[stepCount] = fireY;
-        outPredTargetX[stepCount] = bestPredX;
-        outPredTargetY[stepCount] = bestPredY;
-        float toFireX = fireX - s.cx;
-        float toFireY = fireY - s.cy;
-        float distToFire = std::sqrt(toFireX*toFireX + toFireY*toFireY);
-        ++stepCount;
+        Coord toFire   = bestFirePos - s.pos;
+        float distToFire = length(toFire);
+
+        DEBUG("Step " << stepCount << " pos=(" << s.pos.x << "," << s.pos.y << ")");
+        DEBUG("  target=" << s.chosenTarget << " state=" << s.state);
+
+        stepCount++;
 
         if (distToFire <= cfg.hitRadius * HIT_RADIUS_KOEF) {
-            float dirToTarget = std::atan2(bestPredY - s.cy, bestPredX - s.cx);
+            Coord toPred = bestPredPos - s.pos;
+            float dirToTarget = std::atan2(toPred.y, toPred.x);
             if (std::fabs(angleDiff(s.dir, dirToTarget)) <= cfg.turnThreshold)
-                break; // в точці скиду і повернуті до цілі — скидаємо
+                break;
         }
 
-        updateDroneState(s, fireX, fireY, bestPredX, bestPredY, cfg);
+        updateDroneState(s, bestFirePos, bestPredPos, cfg);
         s.currentTime += cfg.simTimeStep;
     }
 
+    LOG("Simulation complete. Steps: " << stepCount);
     return stepCount;
 }
 
+void writeOutput(const char* filename, const SimStep* steps, int stepCount) {
+    json j;
+    j["totalSteps"] = stepCount;
+    j["steps"]      = json::array();
+
+    for (int i = 0; i < stepCount; i++) {
+        json stepObj;
+        stepObj["position"]    = { {"x", steps[i].pos.x}, {"y", steps[i].pos.y} };
+        stepObj["direction"]   = steps[i].direction;
+        stepObj["state"]       = steps[i].state;
+        stepObj["targetIndex"] = steps[i].targetIdx;
+        j["steps"].push_back(stepObj);
+    }
+
+    std::ofstream f(filename);
+    f << j.dump(2);
+}
+
+void clean(AmmoParams*& ammos, Coord**& targets, int targetCount, SimStep*& steps) {
+    for (int i = 0; i < targetCount; i++)
+        delete[] targets[i];
+    delete[] targets;  targets = nullptr;
+    delete[] ammos;    ammos   = nullptr;
+    delete[] steps;    steps   = nullptr;
+}
+
 // ============================================================
-// main
+// Точка входу
 // ============================================================
 
 int main() {
-    DroneConfig cfg;
-    if (!readInput(cfg))   return 1;
-    if (!loadTargets())    return 1;
+    int ammoCount = 0, selectedAmmoIdx = 0;
+    int targetCount = 0, timeSteps = 0;
 
-    int stepCount = runSimulation(cfg);
-    if (stepCount < 0) return 1;
+    AmmoParams* ammos   = nullptr;
+    Coord**     targets = nullptr;
+    SimStep*    steps   = nullptr;
 
-    if (!writeOutput(stepCount)) return 1;
+    try {
+        DroneConfig cfg = readConfig("config.json");
+        ammos   = readAmmo("ammo.json", cfg.ammoName, ammoCount, selectedAmmoIdx);
+        targets = readTargets("targets.json", targetCount, timeSteps);
 
-    std::cout << "Done. Steps: " << stepCount - 1
-              << ". Drop at: (" << outX[stepCount-1] << ", " << outY[stepCount-1] << ")\n";
+        steps = new SimStep[MAX_STEPS];
+        int stepCount = runSimulation(cfg, ammos[selectedAmmoIdx], targets, targetCount, timeSteps, steps);
+
+        writeOutput("simulation.json", steps, stepCount);
+    } catch (const std::exception& e) {
+        std::cerr << "Error: " << e.what() << '\n';
+        clean(ammos, targets, targetCount, steps);
+        return 1;
+    }
+
+    clean(ammos, targets, targetCount, steps);
+    std::cout << "Done. Output saved to simulation.json.\n";
     return 0;
 }
