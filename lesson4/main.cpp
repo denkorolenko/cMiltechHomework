@@ -12,7 +12,7 @@ Denys Korolenko
 
 #define _USE_MATH_DEFINES
 
-// #define DEBUG_TEST_FOLDER "test3" // test1, test2, test3, test4, test5
+// #define DEBUG_TEST_FOLDER "test5" // test1, test2, test3, test4, test5
 
 static const int   NUM_TARGETS = 5;
 static const int   TIME_STEPS  = 60;
@@ -396,6 +396,14 @@ int selectBestTarget(const SimState& s, const DroneConfig& cfg,
         distFire = std::sqrt(dxFire*dxFire + dyFire*dyFire);
         droneFlightTime = distFire / cfg.attackSpeed + cfg.accelerationPath / cfg.attackSpeed;
         totalTime = droneFlightTime + tFlight2;
+
+        // час розвороту у точці скиду: напрямок підльоту vs напрямок до цілі
+        {
+            float dirApproach  = std::atan2(dyFire, dxFire);
+            float dirFireToTgt = std::atan2(predY - fy2, predX - fx2);
+            float turnAtFire   = std::fabs(angleDiff(dirApproach, dirFireToTgt)) / cfg.angularSpeed;
+            totalTime += turnAtFire;
+        }
 
         // штраф за зміну цілі
         if (i != s.chosenTarget) {
