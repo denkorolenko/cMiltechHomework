@@ -16,6 +16,8 @@ using json = nlohmann::json;
 
 #define _USE_MATH_DEFINES
 
+// #define DEBUG_TEST_FOLDER "test5" // test1, test2, test3, test4, test5
+
 // ============================================================
 // Макроси логування
 // ============================================================
@@ -612,14 +614,24 @@ int main() {
     SimStep*    steps   = nullptr;
 
     try {
+        #ifdef DEBUG_TEST_FOLDER
+        DroneConfig cfg = readConfig(DEBUG_TEST_FOLDER "/config.json");
+        ammos   = readAmmo("ammo.json", cfg.ammoName, ammoCount, selectedAmmoIdx);
+        targets = readTargets(DEBUG_TEST_FOLDER "/targets.json", targetCount, timeSteps);
+        #else
         DroneConfig cfg = readConfig("config.json");
         ammos   = readAmmo("ammo.json", cfg.ammoName, ammoCount, selectedAmmoIdx);
         targets = readTargets("targets.json", targetCount, timeSteps);
+        #endif
 
         steps = new SimStep[MAX_STEPS];
         int stepCount = runSimulation(cfg, ammos[selectedAmmoIdx], targets, targetCount, timeSteps, steps);
 
+        #ifdef DEBUG_TEST_FOLDER
+        writeOutput(DEBUG_TEST_FOLDER "/simulation.json", steps, stepCount);
+        #else
         writeOutput("simulation.json", steps, stepCount);
+        #endif
     } catch (const std::exception& e) {
         std::cerr << "Error: " << e.what() << '\n';
         clean(ammos, targets, targetCount, steps);
