@@ -104,6 +104,9 @@ struct SimStep {
     float direction;
     int state;
     int targetIdx;
+    Coord dropPoint;
+    Coord aimPoint;
+    Coord predictedTarget;
 };
 
 // Внутрішній стан симуляції для стейт-машини
@@ -503,6 +506,16 @@ int runSimulation(const DroneConfig& cfg, const AmmoParams& ammo,
                   SimStep* steps) {
     int stepCount = 0;
 
+    float ammoFlightTime = 0.0f, ammoHDist = 0.0f;
+    try {
+        ammoFlightTime = computeFlightTime(cfg.altitude, cfg.attackSpeed, ammo.mass, ammo.drag, ammo.lift);
+        ammoHDist = computeHorizontalDistance(ammoFlightTime, cfg.attackSpeed, ammo.mass, ammo.drag, ammo.lift);
+    } catch (const std::exception& e) {
+        LOG("Warning: ammo ballistics computation failed: " << e.what() << " — aimPoint will be inaccurate");
+    } catch (...) {
+        LOG("Warning: ammo ballistics computation failed — aimPoint will be inaccurate");
+    }
+
     SimState s;
     s.pos          = cfg.startPos;
     s.dir          = cfg.initialDir;
@@ -528,6 +541,12 @@ int runSimulation(const DroneConfig& cfg, const AmmoParams& ammo,
         }
 
         s.chosenTarget = bestTarget;
+
+        steps[stepCount].dropPoint       = bestFirePos;
+        Coord dirVec                     = {std::cos(s.dir), std::sin(s.dir)};
+        steps[stepCount].aimPoint        = s.pos + dirVec * ammoHDist;
+        steps[stepCount].predictedTarget = bestPredPos;
+
         Coord toFire   = bestFirePos - s.pos;
         float distToFire = length(toFire);
 
@@ -558,10 +577,13 @@ void writeOutput(const char* filename, const SimStep* steps, int stepCount) {
 
     for (int i = 0; i < stepCount; i++) {
         json stepObj;
-        stepObj["position"]    = { {"x", steps[i].pos.x}, {"y", steps[i].pos.y} };
-        stepObj["direction"]   = steps[i].direction;
-        stepObj["state"]       = steps[i].state;
-        stepObj["targetIndex"] = steps[i].targetIdx;
+        stepObj["position"]         = { {"x", steps[i].pos.x}, {"y", steps[i].pos.y} };
+        stepObj["direction"]        = steps[i].direction;
+        stepObj["state"]            = steps[i].state;
+        stepObj["targetIndex"]      = steps[i].targetIdx;
+        stepObj["dropPoint"]        = { {"x", steps[i].dropPoint.x},        {"y", steps[i].dropPoint.y} };
+        stepObj["aimPoint"]         = { {"x", steps[i].aimPoint.x},         {"y", steps[i].aimPoint.y} };
+        stepObj["predictedTarget"]  = { {"x", steps[i].predictedTarget.x},  {"y", steps[i].predictedTarget.y} };
         j["steps"].push_back(stepObj);
     }
 
