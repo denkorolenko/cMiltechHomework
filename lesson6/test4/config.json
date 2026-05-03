@@ -1,20 +1,20 @@
 {
-  "ammo": "VOG-17",
   "drone": {
-    "accelerationPath": 15.0,
-    "altitude": 120.0,
-    "angularSpeed": 1.5,
-    "attackSpeed": 20.0,
-    "initialDirection": 0.5,
     "position": {
-      "x": 200.0,
-      "y": 100.0
+      "x": 250,
+      "y": 250
     },
-    "turnThreshold": 0.3
+    "altitude": 120,
+    "initialDirection": 1,
+    "attackSpeed": 15,
+    "accelerationPath": 20,
+    "angularSpeed": 0.8,
+    "turnThreshold": 0.1
   },
+  "ammo": "VOG-17",
   "simulation": {
-    "hitRadius": 3.0,
-    "timeStep": 0.1
+    "timeStep": 0.1,
+    "hitRadius": 3
   },
-  "targetArrayTimeStep": 10.0
+  "targetArrayTimeStep": 10
 }

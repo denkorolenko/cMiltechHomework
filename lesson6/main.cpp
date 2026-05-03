@@ -16,7 +16,7 @@ using json = nlohmann::json;
 
 #define _USE_MATH_DEFINES
 
-// #define DEBUG_TEST_FOLDER "test5" // test1, test2, test3, test4, test5
+// #define DEBUG_TEST_FOLDER "test10" // test1, ..., test10
 
 // ============================================================
 // Макроси логування
@@ -616,7 +616,7 @@ int main() {
     try {
         #ifdef DEBUG_TEST_FOLDER
         DroneConfig cfg = readConfig(DEBUG_TEST_FOLDER "/config.json");
-        ammos   = readAmmo("ammo.json", cfg.ammoName, ammoCount, selectedAmmoIdx);
+        ammos   = readAmmo(DEBUG_TEST_FOLDER "/ammo.json", cfg.ammoName, ammoCount, selectedAmmoIdx);
         targets = readTargets(DEBUG_TEST_FOLDER "/targets.json", targetCount, timeSteps);
         #else
         DroneConfig cfg = readConfig("config.json");
