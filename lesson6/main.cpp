@@ -374,6 +374,8 @@ void updateDroneState(SimState& s, Coord firePos, Coord predPos, const DroneConf
         case ACCELERATING: {
             if (std::fabs(delta) > cfg.turnThreshold) {
                 s.state = DECELERATING;
+                s.pos.x += s.vel * cfg.simTimeStep * std::cos(s.dir);
+                s.pos.y += s.vel * cfg.simTimeStep * std::sin(s.dir);
                 break;
             }
             s.dir = desiredDir;
@@ -389,6 +391,8 @@ void updateDroneState(SimState& s, Coord firePos, Coord predPos, const DroneConf
         case MOVING: {
             if (std::fabs(delta) > cfg.turnThreshold) {
                 s.state = DECELERATING;
+                s.pos.x += s.vel * cfg.simTimeStep * std::cos(s.dir);
+                s.pos.y += s.vel * cfg.simTimeStep * std::sin(s.dir);
                 break;
             }
             s.dir = desiredDir;
@@ -528,6 +532,8 @@ int runSimulation(const DroneConfig& cfg, const AmmoParams& ammo,
     s.turnRemain   = 0.0f;
     s.chosenTarget = 0;
 
+    const float acceleration = cfg.attackSpeed * cfg.attackSpeed / (2.0f * cfg.accelPath);
+
     while (stepCount < MAX_STEPS) {
         steps[stepCount].pos       = s.pos;
         steps[stepCount].direction = s.dir;
@@ -556,6 +562,17 @@ int runSimulation(const DroneConfig& cfg, const AmmoParams& ammo,
         DEBUG("  target=" << s.chosenTarget << " state=" << s.state);
 
         stepCount++;
+
+        if (stepCount >= 3) {
+            Coord d1 = steps[stepCount - 1].pos - steps[stepCount - 2].pos;
+            Coord d0 = steps[stepCount - 2].pos - steps[stepCount - 3].pos;
+            float curSpeed  = length(d1) / cfg.simTimeStep;
+            float prevSpeed = length(d0) / cfg.simTimeStep;
+            float accelVal  = std::fabs(curSpeed - prevSpeed) / cfg.simTimeStep;
+            if (accelVal > acceleration * 1.10f)
+                LOG("Warning: acceleration violation at step " << (stepCount - 1)
+                    << ": " << accelVal << " > " << acceleration * 1.10f);
+        }
 
         if (distToFire <= cfg.hitRadius * HIT_RADIUS_KOEF) {
             Coord toPred = bestPredPos - s.pos;
