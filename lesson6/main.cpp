@@ -16,7 +16,7 @@ using json = nlohmann::json;
 
 #define _USE_MATH_DEFINES
 
-// #define DEBUG_TEST_FOLDER "test10" // test1, ..., test10
+// #define DEBUG_TEST_FOLDER "test9" // test1, ..., test10
 
 // ============================================================
 // Макроси логування
@@ -569,6 +569,9 @@ int runSimulation(const DroneConfig& cfg, const AmmoParams& ammo,
             float curSpeed  = length(d1) / cfg.simTimeStep;
             float prevSpeed = length(d0) / cfg.simTimeStep;
             float accelVal  = std::fabs(curSpeed - prevSpeed) / cfg.simTimeStep;
+            if (curSpeed > cfg.attackSpeed * 1.10f)
+                LOG("Warning: speed violation at step " << (stepCount - 1)
+                    << ": " << curSpeed << " > " << cfg.attackSpeed * 1.10f);
             if (accelVal > acceleration * 1.10f)
                 LOG("Warning: acceleration violation at step " << (stepCount - 1)
                     << ": " << accelVal << " > " << acceleration * 1.10f);
